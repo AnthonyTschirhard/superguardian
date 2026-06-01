@@ -35,11 +35,11 @@ from .config import is_mounted
 # ── constants ─────────────────────────────────────────────────────────────────
 
 OPERATIONS: list[tuple[str, str, str]] = [
-    ("part1",    "PART 1  Laptop → SAVE_A",  ""),
-    ("part2_ab", "PART 2A  SAVE_A → SAVE_B", ""),
-    ("part2_ac", "PART 2B  SAVE_A → SAVE_C", ""),
-    ("part3",    "PART 3  M-DISC Tracking",  ""),
-    ("part4",    "PART 4  Media",             "(coming soon)"),
+    ("part1",    "Primary Save   Laptop → SAVE_A",  ""),
+    ("part2_ab", "Full Mirror    SAVE_A → SAVE_B",  ""),
+    ("part2_ac", "Offsite Mirror SAVE_A → SAVE_C",  ""),
+    ("part3",    "M-DISC",                          ""),
+    ("part4",    "Media",                           "(coming soon)"),
 ]
 
 # ── CSS ───────────────────────────────────────────────────────────────────────
@@ -260,7 +260,7 @@ class OperationsPanel(Widget):
 
 class Part1View(ScrollableContainer):
     def compose(self) -> ComposeResult:
-        yield Label("[bold]PART 1 — Laptop → SAVE_A[/bold]")
+        yield Label("[bold]Primary Save — Laptop → SAVE_A[/bold]")
         yield Label("", id="p1-status")
         yield Label("MAPPINGS", classes="section-hdr")
         yield Static("", id="p1-mappings")
@@ -301,7 +301,8 @@ class Part2View(ScrollableContainer):
 
     def compose(self) -> ComposeResult:
         dest = self._dest_name
-        yield Label(f"[bold]PART 2 — SAVE_A → {dest}[/bold]")
+        label = "Full Mirror" if dest == "SAVE_B" else "Offsite Mirror"
+        yield Label(f"[bold]{label} — SAVE_A → {dest}[/bold]")
         yield Label("", id=f"p2-status-{self._op_id}")
         yield Label("LOG", classes="section-hdr")
         yield RichLog(id=f"p2-log-{self._op_id}", highlight=True, markup=True)
@@ -329,7 +330,7 @@ class Part3View(ScrollableContainer):
     _pending: list[mdisc.PendingFile] = []
 
     def compose(self) -> ComposeResult:
-        yield Label("[bold]PART 3 — M-DISC Tracking[/bold]")
+        yield Label("[bold]M-DISC Tracking[/bold]")
         yield Label("", id="p3-status")
         yield Label("PENDING FILES (not yet burned)", classes="section-hdr")
         table = DataTable(id="p3-table", zebra_stripes=True)
@@ -377,7 +378,7 @@ class Part3View(ScrollableContainer):
 
 class Part4View(ScrollableContainer):
     def compose(self) -> ComposeResult:
-        yield Label("[bold]PART 4 — Media Drives[/bold]")
+        yield Label("[bold]Media Drives[/bold]")
         yield Label(
             "\n[dim]Coming soon.[/dim]\n\n"
             "This section will handle syncing media drives (films, TV series)\n"
@@ -472,7 +473,7 @@ class DataSyncApp(App):
 
     def action_mark_burned(self) -> None:
         if self.current_op != "part3":
-            self.notify("Mark burned is only available in PART 3.", severity="warning")
+            self.notify("Mark burned is only available in M-DISC.", severity="warning")
             return
         view = self.query_one("#detail-part3", Part3View)
         files = view.all_pending()

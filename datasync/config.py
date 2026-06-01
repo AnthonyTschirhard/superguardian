@@ -13,22 +13,22 @@ _TEMPLATE = """\
 
 # Physical mount points for your SAVE discs
 discs:
-  SAVE_A: /media/anthony/SAVE_A
-  SAVE_B: /media/anthony/SAVE_B
-  SAVE_C: /media/anthony/SAVE_C
+  SAVE_A: /run/media/anthony/SAVE_A
+  SAVE_B: /run/media/anthony/SAVE_B
+  SAVE_C: /run/media/anthony/SAVE_C
 
-# PART 1 — folders to sync from laptop to SAVE_A
+# Primary Save — folders to sync from laptop to SAVE_A
 # Each entry maps a source folder to its destination.
 laptop_to_save_a: []
   # - from: /home/anthony/ANTHONY/PHOTOS
-  #   to:   /media/anthony/SAVE_A/ANTHONY/PHOTOS
+  #   to:   /run/media/anthony/SAVE_A/ANTHONY/PHOTOS
   # - from: /home/anthony/ANTHONY/MAGIC
-  #   to:   /media/anthony/SAVE_A/MAGIC
+  #   to:   /run/media/anthony/SAVE_A/MAGIC
 
-# PART 3 — folders on SAVE_A whose contents must be burned to M-DISC
+# M-DISC — folders on SAVE_A whose contents must be burned to M-DISC
 mdisc_tracked: []
-  # - /media/anthony/SAVE_A/ANTHONY/PHOTOS
-  # - /media/anthony/SAVE_A/MAGIC
+  # - /run/media/anthony/SAVE_A/ANTHONY/PHOTOS
+  # - /run/media/anthony/SAVE_A/MAGIC
 """
 
 
@@ -41,7 +41,7 @@ def load() -> dict[str, Any]:
 
 
 def disc_path(cfg: dict, name: str) -> str:
-    return cfg.get("discs", {}).get(name, f"/media/anthony/{name}")
+    return cfg.get("discs", {}).get(name, f"/run/media/anthony/{name}")
 
 
 def is_mounted(path: str) -> bool:
