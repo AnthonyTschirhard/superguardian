@@ -230,5 +230,32 @@ def _parse_files_count(lines: list[str]) -> int:
     return 0
 
 
+_NON_TRANSFER_PREFIXES = (
+    "sending incremental file list",
+    "building file list",
+    "sent ",
+    "total size is",
+    "Number of",
+    "speedup is",
+    "deleting ",
+    "rsync error",
+    "rsync:",
+    "IO error",
+    "cannot ",
+    "skipping ",
+)
+
+
+def is_transfer_line(line: str) -> bool:
+    """
+    Returns True if a line from rsync -avr output is a file being transferred,
+    as opposed to a stats header, deletion notice, or directory entry.
+    Used to count real-time transfer progress without --itemize-changes.
+    """
+    if not line or line.endswith("/"):
+        return False
+    return not any(line.startswith(p) for p in _NON_TRANSFER_PREFIXES)
+
+
 def _slash(path: str) -> str:
     return path if path.endswith("/") else path + "/"

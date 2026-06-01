@@ -290,6 +290,27 @@ class SyncDetailView(ScrollableContainer):
             self._scan_start = None
             self._summary_static.update(_fmt_summary(summary, error=error))
 
+    def update_sync_progress(self, transferred: int, total: int, elapsed: float) -> None:
+        if self._scan_timer is not None:
+            self._scan_timer.stop()
+            self._scan_timer = None
+            self._scan_start = None
+        elapsed_s = int(elapsed)
+        if total > 0:
+            pct = min(100, transferred * 100 // total)
+            text = (
+                f"[bold yellow]Syncing…[/bold yellow]  "
+                f"[bold]{transferred:,}[/bold] / {total:,} files  "
+                f"[dim]({pct}%  {elapsed_s}s)[/dim]"
+            )
+        else:
+            text = (
+                f"[bold yellow]Syncing…[/bold yellow]  "
+                f"[bold]{transferred:,}[/bold] files  "
+                f"[dim]({elapsed_s}s)[/dim]"
+            )
+        self._summary_static.update(text)
+
     def _tick_elapsed(self) -> None:
         self._render_scanning()
 
@@ -490,6 +511,7 @@ class DataSyncApp(App):
         # int = file count, None = scan in progress, key absent = not yet scanned
         self._pending_counts: dict[str, int | None] = {}
         self._dry_run_summaries: dict[str, sync.DryRunSummary] = {}
+        self._syncing_ops: set[str] = set()
 
     # ── compose ───────────────────────────────────────────────────────────────
 
@@ -633,6 +655,32 @@ class DataSyncApp(App):
         pairs: list[tuple[str, str, list[str]]],
     ) -> None:
         log = self._get_log(op)
+
+        # Mark syncing — shows "Syncing…" badge in left panel immediately
+        self._syncing_ops.add(op)
+        self._refresh_op_status(op)
+
+        sync_start = time.monotonic()
+        transferred = [0]
+        total = (self._dry_run_summaries.get(op) or sync.DryRunSummary(0, 0, 0)).to_add
+
+        sync_view: SyncDetailView | None = None
+        try:
+            sync_view = self._get_view(op)  # type: ignore[assignment]
+            sync_view.update_sync_progress(0, total, 0.0)
+        except Exception:
+            pass
+
+        def on_progress_line(line: str) -> None:
+            log.write(line)
+            if sync.is_transfer_line(line):
+                transferred[0] += 1
+                if sync_view is not None:
+                    sync_view.update_sync_progress(
+                        transferred[0], total,
+                        time.monotonic() - sync_start,
+                    )
+
         run_id = history.start_run(op, dry_run=False)
         total_files = 0
         full_log_parts: list[str] = []
@@ -647,7 +695,7 @@ class DataSyncApp(App):
                     src, dst,
                     dry_run=False,
                     exclude=exclude,
-                    on_line=log.write,
+                    on_line=on_progress_line,
                 )
                 total_files += files
                 full_log_parts.append(part_log)
@@ -663,11 +711,17 @@ class DataSyncApp(App):
             log="\n\n".join(full_log_parts),
         )
 
+        self._syncing_ops.discard(op)
+        self._refresh_op_status(op)
+
         if status == "success":
             log.write(f"\n[green]Sync complete — {total_files} file(s) transferred.[/green]")
+            self._dry_run_summaries[op] = sync.DryRunSummary(to_add=0, to_move=0, to_delete=0)
             self._set_pending(op, 0)
         else:
             log.write(f"\n[red]Sync failed.[/red]")
+            self._dry_run_summaries.pop(op, None)
+            self._refresh_op_summary(op)
 
     # ── background pending-file scan ──────────────────────────────────────────
 
@@ -811,31 +865,43 @@ class DataSyncApp(App):
             a_ok = is_mounted(config.disc_path(cfg, "SAVE_A"))
             last = history.last_successful_sync("part1")
             last_str = _ago(last["finished_at"]) if last else "never"
-            pending = self._pending_label("part1")
+            extra = (
+                "\n[bold yellow]Syncing…[/bold yellow]"
+                if op_id in self._syncing_ops
+                else (f"\n{p}" if (p := self._pending_label(op_id)) else "")
+            )
             panel.set_status(op_id,
                 f"Laptop → SAVE_A {badge(a_ok)}\n"
                 f"[dim]Last: {last_str}[/dim]"
-                + (f"\n{pending}" if pending else ""))
+                + extra)
         elif op_id == "part2_ab":
             a_ok = is_mounted(config.disc_path(cfg, "SAVE_A"))
             b_ok = is_mounted(config.disc_path(cfg, "SAVE_B"))
             last = history.last_successful_sync("part2_ab")
             last_str = _ago(last["finished_at"]) if last else "never"
-            pending = self._pending_label("part2_ab")
+            extra = (
+                "\n[bold yellow]Syncing…[/bold yellow]"
+                if op_id in self._syncing_ops
+                else (f"\n{p}" if (p := self._pending_label(op_id)) else "")
+            )
             panel.set_status(op_id,
                 f"SAVE_A {badge(a_ok)} → SAVE_B {badge(b_ok)}\n"
                 f"[dim]Last: {last_str}[/dim]"
-                + (f"\n{pending}" if pending else ""))
+                + extra)
         elif op_id == "part2_ac":
             a_ok = is_mounted(config.disc_path(cfg, "SAVE_A"))
             c_ok = is_mounted(config.disc_path(cfg, "SAVE_C"))
             last = history.last_successful_sync("part2_ac")
             last_str = _ago(last["finished_at"]) if last else "never"
-            pending = self._pending_label("part2_ac")
+            extra = (
+                "\n[bold yellow]Syncing…[/bold yellow]"
+                if op_id in self._syncing_ops
+                else (f"\n{p}" if (p := self._pending_label(op_id)) else "")
+            )
             panel.set_status(op_id,
                 f"SAVE_A {badge(a_ok)} → SAVE_C {badge(c_ok)}\n"
                 f"[dim]Last: {last_str}[/dim]"
-                + (f"\n{pending}" if pending else ""))
+                + extra)
         elif op_id == "part3":
             try:
                 view = self.query_one("#detail-part3", Part3View)
