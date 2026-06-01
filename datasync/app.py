@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import time
 from datetime import datetime
 from pathlib import Path
 from shutil import which
@@ -156,14 +157,7 @@ def _disc_badge(mounted: bool) -> str:
     return "[green]● connected[/green]" if mounted else "[red]✗ not connected[/red]"
 
 
-def _fmt_summary(
-    summary: sync.DryRunSummary | None,
-    *,
-    scanning: bool,
-    error: bool = False,
-) -> str:
-    if scanning:
-        return "[dim]Scanning…[/dim]"
+def _fmt_summary(summary: sync.DryRunSummary | None, *, error: bool = False) -> str:
     if error:
         return "[yellow dim]Scan error[/yellow dim]"
     if summary is None:
@@ -266,7 +260,46 @@ class OperationsPanel(Widget):
 
 # ── per-operation detail views ────────────────────────────────────────────────
 
-class Part1View(ScrollableContainer):
+class SyncDetailView(ScrollableContainer):
+    """Base for Part1View / Part2View — owns the scanning elapsed-time timer."""
+
+    def on_mount(self) -> None:
+        self._scan_start: float | None = None
+        self._scan_timer = None
+
+    @property
+    def _summary_static(self) -> Static:
+        raise NotImplementedError
+
+    def update_summary(
+        self,
+        summary: sync.DryRunSummary | None,
+        *,
+        scanning: bool,
+        error: bool = False,
+    ) -> None:
+        if scanning:
+            if self._scan_timer is None:
+                self._scan_start = time.monotonic()
+                self._scan_timer = self.set_interval(1.0, self._tick_elapsed)
+            self._render_scanning()
+        else:
+            if self._scan_timer is not None:
+                self._scan_timer.stop()
+                self._scan_timer = None
+            self._scan_start = None
+            self._summary_static.update(_fmt_summary(summary, error=error))
+
+    def _tick_elapsed(self) -> None:
+        self._render_scanning()
+
+    def _render_scanning(self) -> None:
+        if self._scan_start is not None:
+            elapsed = int(time.monotonic() - self._scan_start)
+            self._summary_static.update(f"[dim]Scanning… ({elapsed}s)[/dim]")
+
+
+class Part1View(SyncDetailView):
     def compose(self) -> ComposeResult:
         yield Label("[bold]Primary Save[/bold]")
         yield Label("", id="p1-status")
@@ -277,16 +310,9 @@ class Part1View(ScrollableContainer):
         yield Label("LOG", classes="section-hdr")
         yield RichLog(id="p1-log", highlight=True, markup=True)
 
-    def update_summary(
-        self,
-        summary: sync.DryRunSummary | None,
-        *,
-        scanning: bool,
-        error: bool = False,
-    ) -> None:
-        self.query_one("#p1-summary", Static).update(
-            _fmt_summary(summary, scanning=scanning, error=error)
-        )
+    @property
+    def _summary_static(self) -> Static:
+        return self.query_one("#p1-summary", Static)
 
     def refresh_view(self, cfg: dict[str, Any]) -> None:
         save_a = config.disc_path(cfg, "SAVE_A")
@@ -312,7 +338,7 @@ class Part1View(ScrollableContainer):
         return self.query_one("#p1-log", RichLog)
 
 
-class Part2View(ScrollableContainer):
+class Part2View(SyncDetailView):
     """Used for both SAVE_A→SAVE_B and SAVE_A→SAVE_C."""
 
     def __init__(self, op_id: str, dest_name: str, **kwargs: Any) -> None:
@@ -330,16 +356,9 @@ class Part2View(ScrollableContainer):
         yield Label("LOG", classes="section-hdr")
         yield RichLog(id=f"p2-log-{self._op_id}", highlight=True, markup=True)
 
-    def update_summary(
-        self,
-        summary: sync.DryRunSummary | None,
-        *,
-        scanning: bool,
-        error: bool = False,
-    ) -> None:
-        self.query_one(f"#p2-summary-{self._op_id}", Static).update(
-            _fmt_summary(summary, scanning=scanning, error=error)
-        )
+    @property
+    def _summary_static(self) -> Static:
+        return self.query_one(f"#p2-summary-{self._op_id}", Static)
 
     def refresh_view(self, cfg: dict[str, Any]) -> None:
         save_a = config.disc_path(cfg, "SAVE_A")
@@ -699,19 +718,17 @@ class DataSyncApp(App):
         if op not in ("part1", "part2_ab", "part2_ac"):
             return
         try:
-            view = self._get_view(op)
+            view: SyncDetailView = self._get_view(op)  # type: ignore[assignment]
             if op not in self._pending_counts:
-                view.update_summary(None, scanning=False)  # type: ignore[union-attr]
+                view.update_summary(None, scanning=False)
             elif self._pending_counts[op] is None:
-                view.update_summary(None, scanning=True)  # type: ignore[union-attr]
+                view.update_summary(None, scanning=True)
             elif self._pending_counts[op] == _SCAN_ERROR:
-                view.update_summary(None, scanning=False, error=True)  # type: ignore[union-attr]
+                view.update_summary(None, scanning=False, error=True)
             elif self._pending_counts[op] == _SCAN_UNAVAIL:
-                view.update_summary(None, scanning=False)  # type: ignore[union-attr]
+                view.update_summary(None, scanning=False)
             else:
-                view.update_summary(  # type: ignore[union-attr]
-                    self._dry_run_summaries.get(op), scanning=False
-                )
+                view.update_summary(self._dry_run_summaries.get(op), scanning=False)
         except Exception:
             pass
 
