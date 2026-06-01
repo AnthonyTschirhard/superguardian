@@ -156,6 +156,27 @@ def _disc_badge(mounted: bool) -> str:
     return "[green]● connected[/green]" if mounted else "[red]✗ not connected[/red]"
 
 
+def _fmt_summary(
+    summary: sync.DryRunSummary | None,
+    *,
+    scanning: bool,
+    error: bool = False,
+) -> str:
+    if scanning:
+        return "[dim]Scanning…[/dim]"
+    if error:
+        return "[yellow dim]Scan error[/yellow dim]"
+    if summary is None:
+        return "[dim]—[/dim]"
+    if summary.to_add == 0 and summary.to_move == 0 and summary.to_delete == 0:
+        return "[green]✓ Nothing pending[/green]"
+    return (
+        f"[bold green]+{summary.to_add:,}[/bold green] to add   "
+        f"[bold cyan]→{summary.to_move:,}[/bold cyan] to move   "
+        f"[bold red]✗{summary.to_delete:,}[/bold red] to delete"
+    )
+
+
 # ── modals ────────────────────────────────────────────────────────────────────
 
 class ConfirmSyncModal(ModalScreen[bool]):
@@ -249,10 +270,23 @@ class Part1View(ScrollableContainer):
     def compose(self) -> ComposeResult:
         yield Label("[bold]Primary Save[/bold]")
         yield Label("", id="p1-status")
+        yield Label("PENDING CHANGES", classes="section-hdr")
+        yield Static("[dim]—[/dim]", id="p1-summary")
         yield Label("MAPPINGS", classes="section-hdr")
         yield Static("", id="p1-mappings")
         yield Label("LOG", classes="section-hdr")
         yield RichLog(id="p1-log", highlight=True, markup=True)
+
+    def update_summary(
+        self,
+        summary: sync.DryRunSummary | None,
+        *,
+        scanning: bool,
+        error: bool = False,
+    ) -> None:
+        self.query_one("#p1-summary", Static).update(
+            _fmt_summary(summary, scanning=scanning, error=error)
+        )
 
     def refresh_view(self, cfg: dict[str, Any]) -> None:
         save_a = config.disc_path(cfg, "SAVE_A")
@@ -291,8 +325,21 @@ class Part2View(ScrollableContainer):
         label = "Full Mirror" if dest == "SAVE_B" else "Offsite Mirror"
         yield Label(f"[bold]{label}[/bold]")
         yield Label("", id=f"p2-status-{self._op_id}")
+        yield Label("PENDING CHANGES", classes="section-hdr")
+        yield Static("[dim]—[/dim]", id=f"p2-summary-{self._op_id}")
         yield Label("LOG", classes="section-hdr")
         yield RichLog(id=f"p2-log-{self._op_id}", highlight=True, markup=True)
+
+    def update_summary(
+        self,
+        summary: sync.DryRunSummary | None,
+        *,
+        scanning: bool,
+        error: bool = False,
+    ) -> None:
+        self.query_one(f"#p2-summary-{self._op_id}", Static).update(
+            _fmt_summary(summary, scanning=scanning, error=error)
+        )
 
     def refresh_view(self, cfg: dict[str, Any]) -> None:
         save_a = config.disc_path(cfg, "SAVE_A")
@@ -423,6 +470,7 @@ class DataSyncApp(App):
         self._cfg: dict[str, Any] = {}
         # int = file count, None = scan in progress, key absent = not yet scanned
         self._pending_counts: dict[str, int | None] = {}
+        self._dry_run_summaries: dict[str, sync.DryRunSummary] = {}
 
     # ── compose ───────────────────────────────────────────────────────────────
 
@@ -466,12 +514,14 @@ class DataSyncApp(App):
     def action_refresh(self) -> None:
         self._cfg = config.load()
         self._pending_counts.clear()
+        self._dry_run_summaries.clear()
         self._refresh_all_views()
         self._scan_all_ops()
 
     def action_reload_config(self) -> None:
         self._cfg = config.load()
         self._pending_counts.clear()
+        self._dry_run_summaries.clear()
         self._refresh_all_views()
         self._scan_all_ops()
         self.notify("Config reloaded.")
@@ -482,7 +532,9 @@ class DataSyncApp(App):
             self.notify("No pending-file scan for this operation.", severity="warning")
             return
         self._pending_counts.pop(op, None)
+        self._dry_run_summaries.pop(op, None)
         self._refresh_op_status(op)
+        self._refresh_op_summary(op)
         self._scan_all_ops(ops=[op])
 
     def action_sync_op(self) -> None:
@@ -625,16 +677,43 @@ class DataSyncApp(App):
 
         self._set_pending(op, None)  # show "scanning…"
         try:
-            total = 0
+            to_add = to_move = to_delete = 0
             for src, dst, excl in pairs:
-                total += await sync.count_pending(src, dst, excl)
-            self._set_pending(op, total)
+                part = await sync.dry_run_summary(src, dst, excl)
+                to_add += part.to_add
+                to_move += part.to_move
+                to_delete += part.to_delete
+            summary = sync.DryRunSummary(to_add=to_add, to_move=to_move, to_delete=to_delete)
+            self._dry_run_summaries[op] = summary
+            self._set_pending(op, to_add)
         except Exception:
+            self._dry_run_summaries.pop(op, None)
             self._set_pending(op, _SCAN_ERROR)
 
     def _set_pending(self, op: str, count: int | None) -> None:
         self._pending_counts[op] = count
         self._refresh_op_status(op)
+        self._refresh_op_summary(op)
+
+    def _refresh_op_summary(self, op: str) -> None:
+        if op not in ("part1", "part2_ab", "part2_ac"):
+            return
+        try:
+            view = self._get_view(op)
+            if op not in self._pending_counts:
+                view.update_summary(None, scanning=False)  # type: ignore[union-attr]
+            elif self._pending_counts[op] is None:
+                view.update_summary(None, scanning=True)  # type: ignore[union-attr]
+            elif self._pending_counts[op] == _SCAN_ERROR:
+                view.update_summary(None, scanning=False, error=True)  # type: ignore[union-attr]
+            elif self._pending_counts[op] == _SCAN_UNAVAIL:
+                view.update_summary(None, scanning=False)  # type: ignore[union-attr]
+            else:
+                view.update_summary(  # type: ignore[union-attr]
+                    self._dry_run_summaries.get(op), scanning=False
+                )
+        except Exception:
+            pass
 
     def _pending_label(self, op: str) -> str:
         if op not in self._pending_counts:
@@ -700,6 +779,7 @@ class DataSyncApp(App):
             try:
                 self._get_view(op_id).refresh_view(cfg)  # type: ignore[union-attr]
                 self._refresh_op_status(op_id)
+                self._refresh_op_summary(op_id)
             except Exception:
                 pass
 

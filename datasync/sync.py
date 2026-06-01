@@ -16,6 +16,13 @@ class DeletionRisk:
     permanent: bool  # True = no copy found in source → data would be lost
 
 
+@dataclass
+class DryRunSummary:
+    to_add: int     # files to be transferred (new or changed)
+    to_move: int    # dest-only files with a content copy elsewhere in source (rename/move)
+    to_delete: int  # dest-only files with no copy in source (permanent loss)
+
+
 async def list_deletion_risks(
     source: str,
     destination: str,
@@ -49,6 +56,25 @@ async def list_deletion_risks(
             risks.append(DeletionRisk(rel_path=rel, full_path=full, permanent=not has_copy))
 
     return risks
+
+
+async def dry_run_summary(
+    source: str,
+    destination: str,
+    exclude: list[str] | None = None,
+) -> DryRunSummary:
+    """
+    Returns a categorised count of pending changes for source → destination.
+    Runs count_pending and list_deletion_risks concurrently so both rsync
+    passes happen at the same time.
+    """
+    add_count, risks = await asyncio.gather(
+        count_pending(source, destination, exclude),
+        list_deletion_risks(source, destination, exclude),
+    )
+    to_move = sum(1 for r in risks if not r.permanent)
+    to_delete = sum(1 for r in risks if r.permanent)
+    return DryRunSummary(to_add=add_count, to_move=to_move, to_delete=to_delete)
 
 
 async def count_pending(
