@@ -35,11 +35,11 @@ from .config import is_mounted
 # ── constants ─────────────────────────────────────────────────────────────────
 
 OPERATIONS: list[tuple[str, str, str]] = [
-    ("part1",    "Primary Save   Laptop → SAVE_A",  ""),
-    ("part2_ab", "Full Mirror    SAVE_A → SAVE_B",  ""),
-    ("part2_ac", "Offsite Mirror SAVE_A → SAVE_C",  ""),
-    ("part3",    "M-DISC",                          ""),
-    ("part4",    "Media",                           "(coming soon)"),
+    ("part1",    "Primary Save",   ""),
+    ("part2_ab", "Full Mirror",    ""),
+    ("part2_ac", "Offsite Mirror", ""),
+    ("part3",    "M-DISC",         ""),
+    ("part4",    "Media",          "(coming soon)"),
 ]
 
 # ── CSS ───────────────────────────────────────────────────────────────────────
@@ -65,7 +65,7 @@ OperationsPanel {
 }
 
 ListView { border: none; background: transparent; padding: 0; }
-ListItem { padding: 0 1; height: auto; }
+ListItem { padding: 1 1; height: auto; }
 ListItem.--highlight { background: $accent-darken-2; }
 
 #detail-panel {
@@ -102,7 +102,7 @@ RichLog {
 
 DataTable { height: 14; margin-top: 1; }
 
-#confirm-modal {
+ConfirmSyncModal {
     align: center middle;
 }
 
@@ -118,7 +118,7 @@ DataTable { height: 14; margin-top: 1; }
 #confirm-scroll { height: auto; max-height: 14; }
 #confirm-buttons { layout: horizontal; height: 3; align: center middle; margin-top: 1; }
 
-#burn-modal { align: center middle; }
+BurnModal { align: center middle; }
 #burn-box {
     background: $surface;
     border: round $primary;
@@ -239,19 +239,9 @@ class OperationsPanel(Widget):
             op_id = event.item.id.replace("opitem-", "")
             self.post_message(self.Selected(op_id))
 
-    def set_status(self, op_id: str, status: str) -> None:
+    def set_status(self, op_id: str, content: str) -> None:
         try:
-            label, note = next(
-                (lbl, n) for oid, lbl, n in OPERATIONS if oid == op_id
-            )
-        except StopIteration:
-            return
-        note_str = f" [dim]{note}[/dim]" if note else ""
-        status_str = f" [dim]{status}[/dim]" if status else ""
-        try:
-            self.query_one(f"#opstatus-{op_id}", Static).update(
-                f"{label}{note_str}{status_str}"
-            )
+            self.query_one(f"#opstatus-{op_id}", Static).update(content)
         except NoMatches:
             pass
 
@@ -260,7 +250,7 @@ class OperationsPanel(Widget):
 
 class Part1View(ScrollableContainer):
     def compose(self) -> ComposeResult:
-        yield Label("[bold]Primary Save — Laptop → SAVE_A[/bold]")
+        yield Label("[bold]Primary Save[/bold]")
         yield Label("", id="p1-status")
         yield Label("MAPPINGS", classes="section-hdr")
         yield Static("", id="p1-mappings")
@@ -302,7 +292,7 @@ class Part2View(ScrollableContainer):
     def compose(self) -> ComposeResult:
         dest = self._dest_name
         label = "Full Mirror" if dest == "SAVE_B" else "Offsite Mirror"
-        yield Label(f"[bold]{label} — SAVE_A → {dest}[/bold]")
+        yield Label(f"[bold]{label}[/bold]")
         yield Label("", id=f"p2-status-{self._op_id}")
         yield Label("LOG", classes="section-hdr")
         yield RichLog(id=f"p2-log-{self._op_id}", highlight=True, markup=True)
@@ -383,7 +373,7 @@ class Part3View(ScrollableContainer):
             table.add_row(f.path, size_str, f.reason)
         try:
             self.app.query_one("#ops-panel", OperationsPanel).set_status(
-                "part3", f"[dim]{len(pending)} pending[/dim]"
+                "part3", f"M-DISC\n[dim]{len(pending)} pending[/dim]"
             )
         except Exception:
             pass
@@ -649,33 +639,41 @@ class DataSyncApp(App):
     def _refresh_op_status(self, op_id: str) -> None:
         panel = self.query_one("#ops-panel", OperationsPanel)
         cfg = self._cfg
+
+        def badge(ok: bool) -> str:
+            return "[green]●[/green]" if ok else "[red]✗[/red]"
+
         if op_id == "part1":
-            last = history.last_successful_sync("part1")
             a_ok = is_mounted(config.disc_path(cfg, "SAVE_A"))
-            disc = "✓" if a_ok else "✗"
+            last = history.last_successful_sync("part1")
             last_str = _ago(last["finished_at"]) if last else "never"
-            panel.set_status(op_id, f"[dim]SAVE_A:{disc}  last:{last_str}[/dim]")
+            panel.set_status(op_id,
+                f"Laptop → SAVE_A {badge(a_ok)}\n[dim]Last: {last_str}[/dim]")
         elif op_id == "part2_ab":
             a_ok = is_mounted(config.disc_path(cfg, "SAVE_A"))
             b_ok = is_mounted(config.disc_path(cfg, "SAVE_B"))
             last = history.last_successful_sync("part2_ab")
             last_str = _ago(last["finished_at"]) if last else "never"
-            panel.set_status(op_id, f"[dim]A:{'✓' if a_ok else '✗'}  B:{'✓' if b_ok else '✗'}  last:{last_str}[/dim]")
+            panel.set_status(op_id,
+                f"SAVE_A {badge(a_ok)} → SAVE_B {badge(b_ok)}\n[dim]Last: {last_str}[/dim]")
         elif op_id == "part2_ac":
             a_ok = is_mounted(config.disc_path(cfg, "SAVE_A"))
             c_ok = is_mounted(config.disc_path(cfg, "SAVE_C"))
             last = history.last_successful_sync("part2_ac")
             last_str = _ago(last["finished_at"]) if last else "never"
-            panel.set_status(op_id, f"[dim]A:{'✓' if a_ok else '✗'}  C:{'✓' if c_ok else '✗'}  last:{last_str}[/dim]")
+            panel.set_status(op_id,
+                f"SAVE_A {badge(a_ok)} → SAVE_C {badge(c_ok)}\n[dim]Last: {last_str}[/dim]")
         elif op_id == "part3":
             try:
                 view = self.query_one("#detail-part3", Part3View)
                 if view._scanning:
-                    panel.set_status(op_id, "[dim]scanning…[/dim]")
+                    panel.set_status(op_id, "M-DISC\n[dim]scanning…[/dim]")
                 else:
-                    panel.set_status(op_id, f"[dim]{len(view._pending)} pending[/dim]")
+                    panel.set_status(op_id, f"M-DISC\n[dim]{len(view._pending)} pending[/dim]")
             except Exception:
                 pass
+        elif op_id == "part4":
+            panel.set_status(op_id, "Media\n[dim](coming soon)[/dim]")
 
     def _update_detail_title(self, op_id: str) -> None:
         label = next((lbl for oid, lbl, _ in OPERATIONS if oid == op_id), op_id)
