@@ -51,14 +51,23 @@ async def list_deletion_risks(
     return risks
 
 
-async def count_pending(source: str, destination: str) -> int:
+async def count_pending(
+    source: str,
+    destination: str,
+    exclude: list[str] | None = None,
+) -> int:
     """
     Returns the number of files that need to be transferred (new or changed).
     Uses --itemize-changes so we can count precisely without parsing filenames.
+    Accepts the same exclude patterns as run_rsync so the count reflects the
+    actual sync (e.g. .venv excluded from both).
     """
+    cmd = ["rsync", "-a", "--dry-run", "--itemize-changes"]
+    for p in (exclude or []):
+        cmd.append(f"--exclude={p}")
+    cmd += [_slash(source), _slash(destination)]
     proc = await asyncio.create_subprocess_exec(
-        "rsync", "-a", "--dry-run", "--itemize-changes",
-        _slash(source), _slash(destination),
+        *cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )

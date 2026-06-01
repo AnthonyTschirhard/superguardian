@@ -42,6 +42,10 @@ OPERATIONS: list[tuple[str, str, str]] = [
     ("part4",    "Media",          "(coming soon)"),
 ]
 
+# Sentinel values for _pending_counts
+_SCAN_UNAVAIL = -1   # disc(s) not mounted / source not found
+_SCAN_ERROR   = -2   # rsync or I/O error during scan
+
 # ── CSS ───────────────────────────────────────────────────────────────────────
 
 CSS = """
@@ -155,7 +159,7 @@ def _disc_badge(mounted: bool) -> str:
 # ── modals ────────────────────────────────────────────────────────────────────
 
 class ConfirmSyncModal(ModalScreen[bool]):
-    """Ask the user to confirm before running a destructive sync."""
+    """Ask the user to confirm before running a live sync."""
 
     BINDINGS = [
         Binding("y", "confirm_yes", show=False),
@@ -163,21 +167,14 @@ class ConfirmSyncModal(ModalScreen[bool]):
         Binding("escape", "confirm_no", show=False),
     ]
 
-    def __init__(self, dry_run: bool) -> None:
-        super().__init__()
-        self._dry_run = dry_run
-
     def compose(self) -> ComposeResult:
-        mode = "DRY-RUN" if self._dry_run else "SYNC"
         with Vertical(id="confirm-box"):
-            yield Label(f"[bold]Confirm {mode}[/bold]")
+            yield Label("[bold]Confirm Sync[/bold]")
             yield Label(
-                "\n[dim]Rsync output will appear in the log.[/dim]\n"
-                "Use [bold]d[/bold] to preview before committing."
-                if not self._dry_run else
-                "\n[dim]Dry-run output will appear in the log.[/dim]"
+                "\n[dim]Rsync will run live — output streams to the log.[/dim]\n"
+                "Files deleted from source will also be deleted from the backup."
             )
-            yield Label("\nDo you want to continue?  [dim]y / n[/dim]")
+            yield Label("\nContinue?  [dim]y / n[/dim]")
             with Horizontal(id="confirm-buttons"):
                 yield Button("Yes", variant="warning", id="btn-yes")
                 yield Button("No", variant="default", id="btn-no")
@@ -410,7 +407,7 @@ class DataSyncApp(App):
 
     BINDINGS = [
         Binding("q", "quit", "Quit"),
-        Binding("d", "dry_run", "Dry-run"),
+        Binding("d", "rescan", "Rescan"),
         Binding("s", "sync_op", "Sync"),
         Binding("r", "refresh", "Refresh"),
         Binding("m", "mark_burned", "Mark burned"),
@@ -424,6 +421,8 @@ class DataSyncApp(App):
     def __init__(self) -> None:
         super().__init__()
         self._cfg: dict[str, Any] = {}
+        # int = file count, None = scan in progress, key absent = not yet scanned
+        self._pending_counts: dict[str, int | None] = {}
 
     # ── compose ───────────────────────────────────────────────────────────────
 
@@ -447,6 +446,7 @@ class DataSyncApp(App):
             self.notify("rsync not found — install it with: sudo apt install rsync", severity="error")
         self._cfg = config.load()
         self._refresh_all_views()
+        self._scan_all_ops()
 
     # ── messages ──────────────────────────────────────────────────────────────
 
@@ -465,24 +465,31 @@ class DataSyncApp(App):
 
     def action_refresh(self) -> None:
         self._cfg = config.load()
+        self._pending_counts.clear()
         self._refresh_all_views()
+        self._scan_all_ops()
 
     def action_reload_config(self) -> None:
         self._cfg = config.load()
+        self._pending_counts.clear()
         self._refresh_all_views()
+        self._scan_all_ops()
         self.notify("Config reloaded.")
 
-    def action_dry_run(self) -> None:
-        if self.current_op == "part4":
-            self.notify("Not implemented yet.", severity="warning")
+    def action_rescan(self) -> None:
+        op = self.current_op
+        if op in ("part3", "part4"):
+            self.notify("No pending-file scan for this operation.", severity="warning")
             return
-        self._start_sync(dry_run=True)
+        self._pending_counts.pop(op, None)
+        self._refresh_op_status(op)
+        self._scan_all_ops(ops=[op])
 
     def action_sync_op(self) -> None:
         if self.current_op == "part4":
             self.notify("Not implemented yet.", severity="warning")
             return
-        self._start_sync(dry_run=False)
+        self._start_sync()
 
     def action_mark_burned(self) -> None:
         if self.current_op != "part3":
@@ -497,15 +504,15 @@ class DataSyncApp(App):
 
     # ── sync orchestration ────────────────────────────────────────────────────
 
-    def _start_sync(self, *, dry_run: bool) -> None:
+    def _start_sync(self) -> None:
         op = self.current_op
         if op == "part3":
             self.notify("Use 'm' to manage M-DISC burns.", severity="warning")
             return
-        self._check_risks_then_sync(op, dry_run=dry_run)
+        self._check_risks_then_sync(op)
 
-    @work(exclusive=True)
-    async def _check_risks_then_sync(self, op: str, *, dry_run: bool) -> None:
+    @work(exclusive=True, group="sync")
+    async def _check_risks_then_sync(self, op: str) -> None:
         log = self._get_log(op)
         log.clear()
 
@@ -520,8 +527,6 @@ class DataSyncApp(App):
                 return
 
         # Safety: reject destinations that are too shallow below their disc root.
-        # A misconfigured 'to:' path (e.g. the disc root itself) would let rsync
-        # --delete wipe the entire top-level directory.
         if op == "part1":
             disc_root = config.disc_path(self._cfg, "SAVE_A")
             for _, dst, _ in pairs:
@@ -544,35 +549,32 @@ class DataSyncApp(App):
                 log.write("[red bold]SAFETY BLOCK:[/red bold] SAVE_A and SAVE_C resolve to the same path.")
                 return
 
-        confirmed = await self.push_screen_wait(ConfirmSyncModal(dry_run))
+        confirmed = await self.push_screen_wait(ConfirmSyncModal())
         if not confirmed:
             log.write("[dim]Cancelled.[/dim]")
             return
 
-        await self._execute_sync(op, pairs, dry_run=dry_run)
+        await self._execute_sync(op, pairs)
 
     async def _execute_sync(
         self,
         op: str,
         pairs: list[tuple[str, str, list[str]]],
-        *,
-        dry_run: bool,
     ) -> None:
         log = self._get_log(op)
-        run_id = history.start_run(op, dry_run=dry_run)
+        run_id = history.start_run(op, dry_run=False)
         total_files = 0
         full_log_parts: list[str] = []
         status = "success"
-        mode = "[dim](dry-run)[/dim]" if dry_run else ""
 
         for src, dst, exclude in pairs:
             log.write(f"\n[bold]{'─' * 40}[/bold]")
-            log.write(f"[bold]{src}[/bold]  →  [bold]{dst}[/bold]  {mode}")
+            log.write(f"[bold]{src}[/bold]  →  [bold]{dst}[/bold]")
             try:
                 os.makedirs(dst, exist_ok=True)
                 files, part_log = await sync.run_rsync(
                     src, dst,
-                    dry_run=dry_run,
+                    dry_run=False,
                     exclude=exclude,
                     on_line=log.write,
                 )
@@ -590,12 +592,63 @@ class DataSyncApp(App):
             log="\n\n".join(full_log_parts),
         )
 
-        verb = "Dry-run" if dry_run else "Sync"
         if status == "success":
-            log.write(f"\n[green]{verb} complete — {total_files} file(s) transferred.[/green]")
-            self._refresh_op_status(op)
+            log.write(f"\n[green]Sync complete — {total_files} file(s) transferred.[/green]")
+            self._set_pending(op, 0)
         else:
-            log.write(f"\n[red]{verb} failed.[/red]")
+            log.write(f"\n[red]Sync failed.[/red]")
+
+    # ── background pending-file scan ──────────────────────────────────────────
+
+    @work(exclusive=True, group="scan")
+    async def _scan_all_ops(self, ops: list[str] | None = None) -> None:
+        """
+        Sequentially count pending files for each op.  Sequential (not parallel)
+        to avoid hammering SAVE_A from multiple rsync processes at once.
+        """
+        to_scan = ops or ["part1", "part2_ab", "part2_ac"]
+        for op in to_scan:
+            await self._scan_op(op)
+
+    async def _scan_op(self, op: str) -> None:
+        pairs = self._get_sync_pairs(op)
+        if not pairs:
+            return
+
+        all_accessible = all(
+            Path(src).exists() and Path(dst).exists()
+            for src, dst, _ in pairs
+        )
+        if not all_accessible:
+            self._set_pending(op, _SCAN_UNAVAIL)
+            return
+
+        self._set_pending(op, None)  # show "scanning…"
+        try:
+            total = 0
+            for src, dst, excl in pairs:
+                total += await sync.count_pending(src, dst, excl)
+            self._set_pending(op, total)
+        except Exception:
+            self._set_pending(op, _SCAN_ERROR)
+
+    def _set_pending(self, op: str, count: int | None) -> None:
+        self._pending_counts[op] = count
+        self._refresh_op_status(op)
+
+    def _pending_label(self, op: str) -> str:
+        if op not in self._pending_counts:
+            return ""
+        count = self._pending_counts[op]
+        if count is None:
+            return "[dim]scanning…[/dim]"
+        if count == _SCAN_UNAVAIL:
+            return ""
+        if count == _SCAN_ERROR:
+            return "[yellow dim]scan error[/yellow dim]"
+        if count == 0:
+            return "[green]✓ up to date[/green]"
+        return f"[bold yellow]{count:,}[/bold yellow] [dim]files pending[/dim]"
 
     # ── burn handling ─────────────────────────────────────────────────────────
 
@@ -661,22 +714,31 @@ class DataSyncApp(App):
             a_ok = is_mounted(config.disc_path(cfg, "SAVE_A"))
             last = history.last_successful_sync("part1")
             last_str = _ago(last["finished_at"]) if last else "never"
+            pending = self._pending_label("part1")
             panel.set_status(op_id,
-                f"Laptop → SAVE_A {badge(a_ok)}\n[dim]Last: {last_str}[/dim]")
+                f"Laptop → SAVE_A {badge(a_ok)}\n"
+                f"[dim]Last: {last_str}[/dim]"
+                + (f"\n{pending}" if pending else ""))
         elif op_id == "part2_ab":
             a_ok = is_mounted(config.disc_path(cfg, "SAVE_A"))
             b_ok = is_mounted(config.disc_path(cfg, "SAVE_B"))
             last = history.last_successful_sync("part2_ab")
             last_str = _ago(last["finished_at"]) if last else "never"
+            pending = self._pending_label("part2_ab")
             panel.set_status(op_id,
-                f"SAVE_A {badge(a_ok)} → SAVE_B {badge(b_ok)}\n[dim]Last: {last_str}[/dim]")
+                f"SAVE_A {badge(a_ok)} → SAVE_B {badge(b_ok)}\n"
+                f"[dim]Last: {last_str}[/dim]"
+                + (f"\n{pending}" if pending else ""))
         elif op_id == "part2_ac":
             a_ok = is_mounted(config.disc_path(cfg, "SAVE_A"))
             c_ok = is_mounted(config.disc_path(cfg, "SAVE_C"))
             last = history.last_successful_sync("part2_ac")
             last_str = _ago(last["finished_at"]) if last else "never"
+            pending = self._pending_label("part2_ac")
             panel.set_status(op_id,
-                f"SAVE_A {badge(a_ok)} → SAVE_C {badge(c_ok)}\n[dim]Last: {last_str}[/dim]")
+                f"SAVE_A {badge(a_ok)} → SAVE_C {badge(c_ok)}\n"
+                f"[dim]Last: {last_str}[/dim]"
+                + (f"\n{pending}" if pending else ""))
         elif op_id == "part3":
             try:
                 view = self.query_one("#detail-part3", Part3View)
