@@ -441,15 +441,6 @@ class DataSyncApp(App):
     CSS = CSS
     TITLE = "DataSync"
 
-    class SyncReady(Message):
-        """Posted by the risk-check worker; handled on the main pump to show the modal."""
-        def __init__(self, op: str, pairs: list[tuple[str, str]], risks: list[sync.DeletionRisk], dry_run: bool) -> None:
-            super().__init__()
-            self.op = op
-            self.pairs = pairs
-            self.risks = risks
-            self.dry_run = dry_run
-
     BINDINGS = [
         Binding("q", "quit", "Quit"),
         Binding("d", "dry_run", "Dry-run"),
@@ -548,7 +539,7 @@ class DataSyncApp(App):
 
     @work(exclusive=True)
     async def _check_risks_then_sync(self, op: str, *, dry_run: bool) -> None:
-        """Check deletion risks in a worker, then post message to show modal."""
+        """Check deletion risks, confirm with user, then run sync."""
         log = self._get_log(op)
         log.clear()
 
@@ -573,22 +564,11 @@ class DataSyncApp(App):
                 log.write(f"[red]Risk check failed: {exc}[/red]")
                 return
 
-        self.post_message(DataSyncApp.SyncReady(op, pairs, all_risks, dry_run))
+        confirmed = await self.push_screen_wait(ConfirmSyncModal(all_risks, dry_run))
+        if not confirmed:
+            log.write("[dim]Cancelled.[/dim]")
+            return
 
-    def on_data_sync_app_sync_ready(self, event: "DataSyncApp.SyncReady") -> None:
-        """Runs on the main message pump — safe to call push_screen here."""
-        log = self._get_log(event.op)
-
-        def _on_confirmed(confirmed: bool) -> None:
-            if confirmed:
-                self._do_sync(event.op, event.pairs, dry_run=event.dry_run)
-            else:
-                log.write("[dim]Cancelled.[/dim]")
-
-        self.push_screen(ConfirmSyncModal(event.risks, event.dry_run), _on_confirmed)
-
-    @work(exclusive=True)
-    async def _do_sync(self, op: str, pairs: list[tuple[str, str]], *, dry_run: bool) -> None:
         await self._execute_sync(op, pairs, dry_run=dry_run)
 
     async def _execute_sync(

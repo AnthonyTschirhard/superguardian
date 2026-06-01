@@ -107,9 +107,20 @@ async def run_rsync(
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
+_RISK_EXCLUDES = (
+    # Regeneratable — never a permanent data-loss risk
+    "--exclude=.git",
+    "--exclude=.venv",
+    "--exclude=venv",
+    "--exclude=__pycache__",
+    "--exclude=node_modules",
+    "--exclude=*.pyc",
+)
+
+
 async def _dry_run_deletions(source: str, destination: str) -> list[str]:
     proc = await asyncio.create_subprocess_exec(
-        "rsync", "-avr", "--delete", "--dry-run", source, destination,
+        "rsync", "-r", "--delete", "--dry-run", *_RISK_EXCLUDES, source, destination,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
