@@ -356,7 +356,7 @@ class Part3View(ScrollableContainer):
     def _do_scan(self, cfg: dict[str, Any]) -> None:
         tracked = cfg.get("mdisc_tracked") or []
         pending = mdisc.scan_pending(tracked)
-        self.call_from_thread(self._apply_scan, pending, cfg)
+        self.app.call_from_thread(self._apply_scan, pending, cfg)
 
     def _apply_scan(self, pending: list[mdisc.PendingFile], cfg: dict[str, Any]) -> None:
         self._scanning = False
