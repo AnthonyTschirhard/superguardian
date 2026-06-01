@@ -327,7 +327,9 @@ class Part2View(ScrollableContainer):
 
 
 class Part3View(ScrollableContainer):
-    _pending: list[mdisc.PendingFile] = []
+    def on_mount(self) -> None:
+        self._pending: list[mdisc.PendingFile] = []
+        self._scanning = False
 
     def compose(self) -> ComposeResult:
         yield Label("[bold]M-DISC Tracking[/bold]")
@@ -339,16 +341,37 @@ class Part3View(ScrollableContainer):
         yield Label("[dim]m: mark selected as burned   r: refresh[/dim]")
 
     def refresh_view(self, cfg: dict[str, Any]) -> None:
+        self._scanning = True
         tracked = cfg.get("mdisc_tracked") or []
         available = sum(1 for d in tracked if Path(d).exists())
         self.query_one("#p3-status", Label).update(
             f"Tracked folders: [bold]{len(tracked)}[/bold]"
             f"  Available: [bold]{available}[/bold]"
+            f"  [dim]Scanning…[/dim]"
         )
-        self._pending = mdisc.scan_pending(tracked)
+        self.query_one("#p3-table", DataTable).clear()
+        self._do_scan(cfg)
+
+    @work(thread=True)
+    def _do_scan(self, cfg: dict[str, Any]) -> None:
+        tracked = cfg.get("mdisc_tracked") or []
+        pending = mdisc.scan_pending(tracked)
+        self.call_from_thread(self._apply_scan, pending, cfg)
+
+    def _apply_scan(self, pending: list[mdisc.PendingFile], cfg: dict[str, Any]) -> None:
+        self._scanning = False
+        self._pending = pending
+        tracked = cfg.get("mdisc_tracked") or []
+        available = sum(1 for d in tracked if Path(d).exists())
+        total = mdisc.total_pending_size(pending)
+        self.query_one("#p3-status", Label).update(
+            f"Tracked folders: [bold]{len(tracked)}[/bold]"
+            f"  Available: [bold]{available}[/bold]"
+            f"  Pending: [bold]{len(pending)}[/bold] files ({total})"
+        )
         table = self.query_one("#p3-table", DataTable)
         table.clear()
-        for f in self._pending:
+        for f in pending:
             size_b = f.size
             for unit in ("B", "KB", "MB", "GB"):
                 if size_b < 1024:
@@ -358,13 +381,12 @@ class Part3View(ScrollableContainer):
             else:
                 size_str = f"{size_b:.1f} TB"
             table.add_row(f.path, size_str, f.reason)
-
-        total = mdisc.total_pending_size(self._pending)
-        self.query_one("#p3-status", Label).update(
-            f"Tracked folders: [bold]{len(tracked)}[/bold]"
-            f"  Available: [bold]{available}[/bold]"
-            f"  Pending: [bold]{len(self._pending)}[/bold] files ({total})"
-        )
+        try:
+            self.app.query_one("#ops-panel", OperationsPanel).set_status(
+                "part3", f"[dim]{len(pending)} pending[/dim]"
+            )
+        except Exception:
+            pass
 
     def selected_files(self) -> list[mdisc.PendingFile]:
         table = self.query_one("#p3-table", DataTable)
@@ -452,7 +474,6 @@ class DataSyncApp(App):
     def action_refresh(self) -> None:
         self._cfg = config.load()
         self._refresh_all_views()
-        self._refresh_pending_count()
 
     def action_reload_config(self) -> None:
         self._cfg = config.load()
@@ -647,17 +668,14 @@ class DataSyncApp(App):
             last_str = _ago(last["finished_at"]) if last else "never"
             panel.set_status(op_id, f"[dim]A:{'✓' if a_ok else '✗'}  C:{'✓' if c_ok else '✗'}  last:{last_str}[/dim]")
         elif op_id == "part3":
-            tracked = cfg.get("mdisc_tracked") or []
-            pending = mdisc.scan_pending(tracked)
-            panel.set_status(op_id, f"[dim]{len(pending)} pending[/dim]")
-
-    @work(thread=True)
-    def _refresh_pending_count(self) -> None:
-        """Background thread to update files-behind counts (slow for large discs)."""
-        cfg = self._cfg
-        for op_id in ("part1", "part2_ab", "part2_ac"):
-            pairs = self._get_sync_pairs(op_id)
-            # This would need async — skipping for thread worker; status shows last sync instead
+            try:
+                view = self.query_one("#detail-part3", Part3View)
+                if view._scanning:
+                    panel.set_status(op_id, "[dim]scanning…[/dim]")
+                else:
+                    panel.set_status(op_id, f"[dim]{len(view._pending)} pending[/dim]")
+            except Exception:
+                pass
 
     def _update_detail_title(self, op_id: str) -> None:
         label = next((lbl for oid, lbl, _ in OPERATIONS if oid == op_id), op_id)
