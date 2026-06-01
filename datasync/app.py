@@ -158,65 +158,32 @@ class ConfirmSyncModal(ModalScreen[bool]):
     """Ask the user to confirm before running a destructive sync."""
 
     BINDINGS = [
-        Binding("j", "cursor_down", show=False),
-        Binding("k", "cursor_up", show=False),
         Binding("y", "confirm_yes", show=False),
         Binding("n", "confirm_no", show=False),
         Binding("escape", "confirm_no", show=False),
     ]
 
-    def __init__(self, risks: list[sync.DeletionRisk], dry_run: bool) -> None:
+    def __init__(self, dry_run: bool) -> None:
         super().__init__()
-        self._risks = risks
         self._dry_run = dry_run
 
     def compose(self) -> ComposeResult:
-        permanent = [r for r in self._risks if r.permanent]
         mode = "DRY-RUN" if self._dry_run else "SYNC"
         with Vertical(id="confirm-box"):
             yield Label(f"[bold]Confirm {mode}[/bold]")
-            if permanent:
-                yield Label(
-                    f"\n[red][bold]{len(permanent)} file(s) will be permanently deleted[/bold][/red]\n"
-                    "(no matching copy found in source):"
-                )
-                yield ListView(
-                    *[ListItem(Label(f"[red]{r.rel_path}[/red]")) for r in permanent],
-                    id="confirm-list",
-                )
-            elif self._risks:
-                yield Label(
-                    f"\n[yellow]{len(self._risks)} file(s) will be removed from destination[/yellow]\n"
-                    "(copies exist in source — likely moved):"
-                )
-                yield ListView(
-                    *[ListItem(Label(f"[dim]{r.rel_path}[/dim]")) for r in self._risks],
-                    id="confirm-list",
-                )
-            else:
-                yield Label("\n[green]No deletions detected.[/green]")
+            yield Label(
+                "\n[dim]Rsync output will appear in the log.[/dim]\n"
+                "Use [bold]d[/bold] to preview before committing."
+                if not self._dry_run else
+                "\n[dim]Dry-run output will appear in the log.[/dim]"
+            )
             yield Label("\nDo you want to continue?  [dim]y / n[/dim]")
             with Horizontal(id="confirm-buttons"):
                 yield Button("Yes", variant="warning", id="btn-yes")
                 yield Button("No", variant="default", id="btn-no")
 
     def on_mount(self) -> None:
-        try:
-            self.query_one("#confirm-list", ListView).focus()
-        except NoMatches:
-            self.query_one("#btn-no", Button).focus()
-
-    def action_cursor_down(self) -> None:
-        try:
-            self.query_one("#confirm-list", ListView).action_cursor_down()
-        except NoMatches:
-            pass
-
-    def action_cursor_up(self) -> None:
-        try:
-            self.query_one("#confirm-list", ListView).action_cursor_up()
-        except NoMatches:
-            pass
+        self.query_one("#btn-no", Button).focus()
 
     def action_confirm_yes(self) -> None:
         self.dismiss(True)
@@ -539,7 +506,6 @@ class DataSyncApp(App):
 
     @work(exclusive=True)
     async def _check_risks_then_sync(self, op: str, *, dry_run: bool) -> None:
-        """For dry-run: check deletion risks first. For sync: confirm immediately."""
         log = self._get_log(op)
         log.clear()
 
@@ -548,26 +514,12 @@ class DataSyncApp(App):
             log.write("[yellow]No mappings configured for this operation.[/yellow]")
             return
 
-        for src, dst, _exclude in pairs:
+        for src, _dst, _excl in pairs:
             if not Path(src).exists():
                 log.write(f"[red]Source not found: {src}[/red]")
                 return
 
-        all_risks: list[sync.DeletionRisk] = []
-        if dry_run:
-            for src, dst, exclude in pairs:
-                if not Path(dst).exists():
-                    log.write(f"[yellow]Destination not found (will be created): {dst}[/yellow]")
-                    continue
-                log.write(f"[dim]Checking for deletion risks: {src} → {dst}[/dim]")
-                try:
-                    risks = await sync.list_deletion_risks(src, dst, exclude)
-                    all_risks.extend(risks)
-                except Exception as exc:
-                    log.write(f"[red]Risk check failed: {exc}[/red]")
-                    return
-
-        confirmed = await self.push_screen_wait(ConfirmSyncModal(all_risks, dry_run))
+        confirmed = await self.push_screen_wait(ConfirmSyncModal(dry_run))
         if not confirmed:
             log.write("[dim]Cancelled.[/dim]")
             return
