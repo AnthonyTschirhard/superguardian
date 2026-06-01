@@ -440,6 +440,16 @@ class Part4View(ScrollableContainer):
 class DataSyncApp(App):
     CSS = CSS
     TITLE = "DataSync"
+
+    class SyncReady(Message):
+        """Posted by the risk-check worker; handled on the main pump to show the modal."""
+        def __init__(self, op: str, pairs: list[tuple[str, str]], risks: list[sync.DeletionRisk], dry_run: bool) -> None:
+            super().__init__()
+            self.op = op
+            self.pairs = pairs
+            self.risks = risks
+            self.dry_run = dry_run
+
     BINDINGS = [
         Binding("q", "quit", "Quit"),
         Binding("d", "dry_run", "Dry-run"),
@@ -504,17 +514,17 @@ class DataSyncApp(App):
         self._refresh_all_views()
         self.notify("Config reloaded.")
 
-    async def action_dry_run(self) -> None:
+    def action_dry_run(self) -> None:
         if self.current_op == "part4":
             self.notify("Not implemented yet.", severity="warning")
             return
-        await self._start_sync(dry_run=True)
+        self._start_sync(dry_run=True)
 
-    async def action_sync_op(self) -> None:
+    def action_sync_op(self) -> None:
         if self.current_op == "part4":
             self.notify("Not implemented yet.", severity="warning")
             return
-        await self._start_sync(dry_run=False)
+        self._start_sync(dry_run=False)
 
     def action_mark_burned(self) -> None:
         if self.current_op != "part3":
@@ -529,15 +539,16 @@ class DataSyncApp(App):
 
     # ── sync orchestration ────────────────────────────────────────────────────
 
-    async def _start_sync(self, *, dry_run: bool) -> None:
+    def _start_sync(self, *, dry_run: bool) -> None:
         op = self.current_op
         if op == "part3":
             self.notify("Use 'm' to manage M-DISC burns.", severity="warning")
             return
-        await self._check_risks_then_sync(op, dry_run=dry_run)
+        self._check_risks_then_sync(op, dry_run=dry_run)
 
+    @work(exclusive=True)
     async def _check_risks_then_sync(self, op: str, *, dry_run: bool) -> None:
-        """Check deletion risks, show confirmation modal, then run sync."""
+        """Check deletion risks in a worker, then post message to show modal."""
         log = self._get_log(op)
         log.clear()
 
@@ -562,11 +573,19 @@ class DataSyncApp(App):
                 log.write(f"[red]Risk check failed: {exc}[/red]")
                 return
 
-        confirmed = await self.push_screen_wait(ConfirmSyncModal(all_risks, dry_run))
-        if not confirmed:
-            log.write("[dim]Cancelled.[/dim]")
-            return
-        self._do_sync(op, pairs, dry_run=dry_run)
+        self.post_message(DataSyncApp.SyncReady(op, pairs, all_risks, dry_run))
+
+    def on_data_sync_app_sync_ready(self, event: "DataSyncApp.SyncReady") -> None:
+        """Runs on the main message pump — safe to call push_screen here."""
+        log = self._get_log(event.op)
+
+        def _on_confirmed(confirmed: bool) -> None:
+            if confirmed:
+                self._do_sync(event.op, event.pairs, dry_run=event.dry_run)
+            else:
+                log.write("[dim]Cancelled.[/dim]")
+
+        self.push_screen(ConfirmSyncModal(event.risks, event.dry_run), _on_confirmed)
 
     @work(exclusive=True)
     async def _do_sync(self, op: str, pairs: list[tuple[str, str]], *, dry_run: bool) -> None:
