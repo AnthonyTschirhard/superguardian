@@ -115,7 +115,8 @@ ConfirmSyncModal {
     max-height: 30;
 }
 
-#confirm-scroll { height: auto; max-height: 14; }
+#confirm-list { height: auto; max-height: 14; border: none; background: transparent; padding: 0; }
+#confirm-list > ListItem { padding: 0 1; }
 #confirm-buttons { layout: horizontal; height: 3; align: center middle; margin-top: 1; }
 
 BurnModal { align: center middle; }
@@ -156,6 +157,14 @@ def _disc_badge(mounted: bool) -> str:
 class ConfirmSyncModal(ModalScreen[bool]):
     """Ask the user to confirm before running a destructive sync."""
 
+    BINDINGS = [
+        Binding("j", "cursor_down", show=False),
+        Binding("k", "cursor_up", show=False),
+        Binding("y", "confirm_yes", show=False),
+        Binding("n", "confirm_no", show=False),
+        Binding("escape", "confirm_no", show=False),
+    ]
+
     def __init__(self, risks: list[sync.DeletionRisk], dry_run: bool) -> None:
         super().__init__()
         self._risks = risks
@@ -171,25 +180,49 @@ class ConfirmSyncModal(ModalScreen[bool]):
                     f"\n[red][bold]{len(permanent)} file(s) will be permanently deleted[/bold][/red]\n"
                     "(no matching copy found in source):"
                 )
-                with ScrollableContainer(id="confirm-scroll"):
-                    for r in permanent:
-                        yield Label(f"  [red]{r.full_path}[/red]")
+                yield ListView(
+                    *[ListItem(Label(f"[red]{r.rel_path}[/red]")) for r in permanent],
+                    id="confirm-list",
+                )
             elif self._risks:
                 yield Label(
                     f"\n[yellow]{len(self._risks)} file(s) will be removed from destination[/yellow]\n"
                     "(copies exist in source — likely moved):"
                 )
-                with ScrollableContainer(id="confirm-scroll"):
-                    for r in self._risks[:20]:
-                        yield Label(f"  [dim]{r.full_path}[/dim]")
-                    if len(self._risks) > 20:
-                        yield Label(f"  [dim]… and {len(self._risks) - 20} more[/dim]")
+                yield ListView(
+                    *[ListItem(Label(f"[dim]{r.rel_path}[/dim]")) for r in self._risks],
+                    id="confirm-list",
+                )
             else:
                 yield Label("\n[green]No deletions detected.[/green]")
-            yield Label("\nDo you want to continue?")
+            yield Label("\nDo you want to continue?  [dim]y / n[/dim]")
             with Horizontal(id="confirm-buttons"):
                 yield Button("Yes", variant="warning", id="btn-yes")
                 yield Button("No", variant="default", id="btn-no")
+
+    def on_mount(self) -> None:
+        try:
+            self.query_one("#confirm-list", ListView).focus()
+        except NoMatches:
+            self.query_one("#btn-no", Button).focus()
+
+    def action_cursor_down(self) -> None:
+        try:
+            self.query_one("#confirm-list", ListView).action_cursor_down()
+        except NoMatches:
+            pass
+
+    def action_cursor_up(self) -> None:
+        try:
+            self.query_one("#confirm-list", ListView).action_cursor_up()
+        except NoMatches:
+            pass
+
+    def action_confirm_yes(self) -> None:
+        self.dismiss(True)
+
+    def action_confirm_no(self) -> None:
+        self.dismiss(False)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self.dismiss(event.button.id == "btn-yes")
