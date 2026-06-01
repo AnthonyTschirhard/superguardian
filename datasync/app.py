@@ -349,6 +349,9 @@ class Part2View(ScrollableContainer):
         return self.query_one(f"#p2-log-{self._op_id}", RichLog)
 
 
+_TABLE_LIMIT = 500  # max rows rendered; _pending always holds the full list
+
+
 class Part3View(ScrollableContainer):
     def on_mount(self) -> None:
         self._pending: list[mdisc.PendingFile] = []
@@ -394,8 +397,13 @@ class Part3View(ScrollableContainer):
         )
         table = self.query_one("#p3-table", DataTable)
         table.clear()
-        for f in pending:
+        for f in pending[:_TABLE_LIMIT]:
             table.add_row(f.path, mdisc.fmt_size(f.size), f.reason)
+        if len(pending) > _TABLE_LIMIT:
+            table.add_row(
+                f"[dim]… {len(pending) - _TABLE_LIMIT:,} more files not shown[/dim]",
+                "", "",
+            )
         try:
             self.app.query_one("#ops-panel", OperationsPanel).set_status(
                 "part3", f"M-DISC\n[dim]{len(pending)} pending[/dim]"
@@ -405,8 +413,9 @@ class Part3View(ScrollableContainer):
 
     def selected_files(self) -> list[mdisc.PendingFile]:
         table = self.query_one("#p3-table", DataTable)
-        if table.cursor_row < len(self._pending):
-            return [self._pending[table.cursor_row]]
+        idx = table.cursor_row
+        if idx < min(len(self._pending), _TABLE_LIMIT):
+            return [self._pending[idx]]
         return []
 
     def all_pending(self) -> list[mdisc.PendingFile]:
