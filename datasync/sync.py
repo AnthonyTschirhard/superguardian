@@ -79,7 +79,7 @@ async def run_rsync(
     Raises RuntimeError on failure (rsync exit ≠ 0 or 24).
     """
     src, dst = _slash(source), _slash(destination)
-    cmd = ["rsync", "-avr", "--delete"]
+    cmd = ["rsync", "-avr", "--delete", "--stats"]
     if dry_run:
         cmd.append("--dry-run")
     cmd += [src, dst]
