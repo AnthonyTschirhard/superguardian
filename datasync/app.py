@@ -504,17 +504,17 @@ class DataSyncApp(App):
         self._refresh_all_views()
         self.notify("Config reloaded.")
 
-    def action_dry_run(self) -> None:
+    async def action_dry_run(self) -> None:
         if self.current_op == "part4":
             self.notify("Not implemented yet.", severity="warning")
             return
-        self._start_sync(dry_run=True)
+        await self._start_sync(dry_run=True)
 
-    def action_sync_op(self) -> None:
+    async def action_sync_op(self) -> None:
         if self.current_op == "part4":
             self.notify("Not implemented yet.", severity="warning")
             return
-        self._start_sync(dry_run=False)
+        await self._start_sync(dry_run=False)
 
     def action_mark_burned(self) -> None:
         if self.current_op != "part3":
@@ -529,16 +529,15 @@ class DataSyncApp(App):
 
     # ── sync orchestration ────────────────────────────────────────────────────
 
-    def _start_sync(self, *, dry_run: bool) -> None:
+    async def _start_sync(self, *, dry_run: bool) -> None:
         op = self.current_op
         if op == "part3":
             self.notify("Use 'm' to manage M-DISC burns.", severity="warning")
             return
-        self._check_risks_then_sync(op, dry_run=dry_run)
+        await self._check_risks_then_sync(op, dry_run=dry_run)
 
-    @work(exclusive=True)
     async def _check_risks_then_sync(self, op: str, *, dry_run: bool) -> None:
-        """Check for deletion risks, then show confirmation modal via callback."""
+        """Check deletion risks, show confirmation modal, then run sync."""
         log = self._get_log(op)
         log.clear()
 
@@ -563,13 +562,11 @@ class DataSyncApp(App):
                 log.write(f"[red]Risk check failed: {exc}[/red]")
                 return
 
-        def _on_confirmed(confirmed: bool) -> None:
-            if confirmed:
-                self._do_sync(op, pairs, dry_run=dry_run)
-            else:
-                log.write("[dim]Cancelled.[/dim]")
-
-        self.push_screen(ConfirmSyncModal(all_risks, dry_run), _on_confirmed)
+        confirmed = await self.push_screen_wait(ConfirmSyncModal(all_risks, dry_run))
+        if not confirmed:
+            log.write("[dim]Cancelled.[/dim]")
+            return
+        self._do_sync(op, pairs, dry_run=dry_run)
 
     @work(exclusive=True)
     async def _do_sync(self, op: str, pairs: list[tuple[str, str]], *, dry_run: bool) -> None:
