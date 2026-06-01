@@ -537,7 +537,6 @@ class DataSyncApp(App):
 
         await self._execute_sync(op, pairs, dry_run=dry_run)
 
-    @work(exclusive=True)
     async def _execute_sync(
         self,
         op: str,
