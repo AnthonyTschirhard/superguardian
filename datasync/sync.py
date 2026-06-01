@@ -15,13 +15,17 @@ class DeletionRisk:
     permanent: bool  # True = no copy found in source → data would be lost
 
 
-async def list_deletion_risks(source: str, destination: str) -> list[DeletionRisk]:
+async def list_deletion_risks(
+    source: str,
+    destination: str,
+    exclude: list[str] | None = None,
+) -> list[DeletionRisk]:
     """
     Dry-runs rsync and identifies destination files that would be permanently
     deleted — i.e. they have no size+content match anywhere in source.
     """
     src, dst = _slash(source), _slash(destination)
-    to_delete = await _dry_run_deletions(src, dst)
+    to_delete = await _dry_run_deletions(src, dst, exclude or [])
     if not to_delete:
         return []
 
@@ -71,6 +75,7 @@ async def run_rsync(
     destination: str,
     *,
     dry_run: bool,
+    exclude: list[str] | None = None,
     on_line: Callable[[str], None] | None = None,
 ) -> tuple[int, str]:
     """
@@ -82,6 +87,8 @@ async def run_rsync(
     cmd = ["rsync", "-avr", "--delete", "--stats"]
     if dry_run:
         cmd.append("--dry-run")
+    for pattern in (exclude or []):
+        cmd.append(f"--exclude={pattern}")
     cmd += [src, dst]
 
     proc = await asyncio.create_subprocess_exec(
@@ -118,9 +125,10 @@ _RISK_EXCLUDES = (
 )
 
 
-async def _dry_run_deletions(source: str, destination: str) -> list[str]:
+async def _dry_run_deletions(source: str, destination: str, exclude: list[str]) -> list[str]:
+    user_excludes = tuple(f"--exclude={p}" for p in exclude)
     proc = await asyncio.create_subprocess_exec(
-        "rsync", "-r", "--delete", "--dry-run", *_RISK_EXCLUDES, source, destination,
+        "rsync", "-r", "--delete", "--dry-run", *_RISK_EXCLUDES, *user_excludes, source, destination,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )

@@ -549,7 +549,7 @@ class DataSyncApp(App):
             return
 
         all_risks: list[sync.DeletionRisk] = []
-        for src, dst in pairs:
+        for src, dst, exclude in pairs:
             if not Path(src).exists():
                 log.write(f"[red]Source not found: {src}[/red]")
                 return
@@ -558,7 +558,7 @@ class DataSyncApp(App):
                 continue
             log.write(f"[dim]Checking for deletion risks: {src} → {dst}[/dim]")
             try:
-                risks = await sync.list_deletion_risks(src, dst)
+                risks = await sync.list_deletion_risks(src, dst, exclude)
                 all_risks.extend(risks)
             except Exception as exc:
                 log.write(f"[red]Risk check failed: {exc}[/red]")
@@ -574,7 +574,7 @@ class DataSyncApp(App):
     async def _execute_sync(
         self,
         op: str,
-        pairs: list[tuple[str, str]],
+        pairs: list[tuple[str, str, list[str]]],
         *,
         dry_run: bool,
     ) -> None:
@@ -585,7 +585,7 @@ class DataSyncApp(App):
         status = "success"
         mode = "[dim](dry-run)[/dim]" if dry_run else ""
 
-        for src, dst in pairs:
+        for src, dst, exclude in pairs:
             log.write(f"\n[bold]{'─' * 40}[/bold]")
             log.write(f"[bold]{src}[/bold]  →  [bold]{dst}[/bold]  {mode}")
             try:
@@ -593,6 +593,7 @@ class DataSyncApp(App):
                 files, part_log = await sync.run_rsync(
                     src, dst,
                     dry_run=dry_run,
+                    exclude=exclude,
                     on_line=log.write,
                 )
                 total_files += files
@@ -635,17 +636,17 @@ class DataSyncApp(App):
 
     # ── helpers ───────────────────────────────────────────────────────────────
 
-    def _get_sync_pairs(self, op: str) -> list[tuple[str, str]]:
+    def _get_sync_pairs(self, op: str) -> list[tuple[str, str, list[str]]]:
         cfg = self._cfg
         if op == "part1":
             return [
-                (m["from"], m["to"])
+                (m["from"], m["to"], list(m.get("exclude") or []))
                 for m in (cfg.get("laptop_to_save_a") or [])
             ]
         if op == "part2_ab":
-            return [(config.disc_path(cfg, "SAVE_A"), config.disc_path(cfg, "SAVE_B"))]
+            return [(config.disc_path(cfg, "SAVE_A"), config.disc_path(cfg, "SAVE_B"), [])]
         if op == "part2_ac":
-            return [(config.disc_path(cfg, "SAVE_A"), config.disc_path(cfg, "SAVE_C"))]
+            return [(config.disc_path(cfg, "SAVE_A"), config.disc_path(cfg, "SAVE_C"), [])]
         return []
 
     def _get_log(self, op: str) -> RichLog:

@@ -19,11 +19,13 @@ discs:
 
 # Primary Save — folders to sync from laptop to SAVE_A
 # Each entry maps a source folder to its destination.
+# Optional 'exclude' accepts rsync patterns (same as --exclude=PATTERN).
 laptop_to_save_a: []
   # - from: /home/anthony/ANTHONY/PHOTOS
   #   to:   /run/media/anthony/SAVE_A/ANTHONY/PHOTOS
-  # - from: /home/anthony/ANTHONY/MAGIC
-  #   to:   /run/media/anthony/SAVE_A/MAGIC
+  #   exclude:
+  #     - .venv
+  #     - __pycache__
 
 # M-DISC — folders on SAVE_A whose contents must be burned to M-DISC
 mdisc_tracked: []
