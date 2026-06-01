@@ -6,6 +6,7 @@ import filecmp
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass
@@ -113,6 +114,37 @@ async def run_rsync(
 
 
 # ── helpers ────────────────────────────────────────────────────────────────────
+
+# Destinations with --delete must be at least this many levels below the disc root.
+# Depth 1 would allow wiping top-level disc directories; 2 is the safe minimum.
+_MIN_DEST_DEPTH = 2
+
+
+def check_destination_safety(destination: str, disc_root: str) -> None:
+    """
+    Raise ValueError if *destination* is dangerously shallow under *disc_root*.
+
+    Prevents a misconfigured ``to:`` path from letting rsync --delete wipe an
+    entire top-level directory on a backup disc.
+    """
+    dst = Path(destination.rstrip("/"))
+    root = Path(disc_root.rstrip("/"))
+    try:
+        rel = dst.relative_to(root)
+    except ValueError:
+        raise ValueError(
+            f"Destination {str(destination)!r} is not inside disc root {str(disc_root)!r}. "
+            "Check your config."
+        )
+    depth = len(rel.parts)
+    if depth < _MIN_DEST_DEPTH:
+        raise ValueError(
+            f"Destination {str(destination)!r} is only {depth} level(s) below disc root "
+            f"{str(disc_root)!r} (minimum {_MIN_DEST_DEPTH}). "
+            "Syncing here with --delete would risk wiping top-level disc content. "
+            "Add a subdirectory (e.g. SAVE_A/ANTHONY/PROJECT/save/)."
+        )
+
 
 _RISK_EXCLUDES = (
     # Regeneratable — never a permanent data-loss risk

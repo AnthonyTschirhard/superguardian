@@ -519,6 +519,31 @@ class DataSyncApp(App):
                 log.write(f"[red]Source not found: {src}[/red]")
                 return
 
+        # Safety: reject destinations that are too shallow below their disc root.
+        # A misconfigured 'to:' path (e.g. the disc root itself) would let rsync
+        # --delete wipe the entire top-level directory.
+        if op == "part1":
+            disc_root = config.disc_path(self._cfg, "SAVE_A")
+            for _, dst, _ in pairs:
+                try:
+                    sync.check_destination_safety(dst, disc_root)
+                except ValueError as exc:
+                    log.write(f"[red bold]SAFETY BLOCK:[/red bold] {exc}")
+                    log.write("[red]Sync aborted — fix the 'to:' path in your config.[/red]")
+                    return
+        elif op == "part2_ab":
+            src_root = config.disc_path(self._cfg, "SAVE_A")
+            dst_root = config.disc_path(self._cfg, "SAVE_B")
+            if Path(src_root).resolve() == Path(dst_root).resolve():
+                log.write("[red bold]SAFETY BLOCK:[/red bold] SAVE_A and SAVE_B resolve to the same path.")
+                return
+        elif op == "part2_ac":
+            src_root = config.disc_path(self._cfg, "SAVE_A")
+            dst_root = config.disc_path(self._cfg, "SAVE_C")
+            if Path(src_root).resolve() == Path(dst_root).resolve():
+                log.write("[red bold]SAFETY BLOCK:[/red bold] SAVE_A and SAVE_C resolve to the same path.")
+                return
+
         confirmed = await self.push_screen_wait(ConfirmSyncModal(dry_run))
         if not confirmed:
             log.write("[dim]Cancelled.[/dim]")
