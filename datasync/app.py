@@ -539,7 +539,7 @@ class DataSyncApp(App):
 
     @work(exclusive=True)
     async def _check_risks_then_sync(self, op: str, *, dry_run: bool) -> None:
-        """Check deletion risks, confirm with user, then run sync."""
+        """For dry-run: check deletion risks first. For sync: confirm immediately."""
         log = self._get_log(op)
         log.clear()
 
@@ -548,21 +548,24 @@ class DataSyncApp(App):
             log.write("[yellow]No mappings configured for this operation.[/yellow]")
             return
 
-        all_risks: list[sync.DeletionRisk] = []
-        for src, dst, exclude in pairs:
+        for src, dst, _exclude in pairs:
             if not Path(src).exists():
                 log.write(f"[red]Source not found: {src}[/red]")
                 return
-            if not Path(dst).exists():
-                log.write(f"[yellow]Destination not found (will be created): {dst}[/yellow]")
-                continue
-            log.write(f"[dim]Checking for deletion risks: {src} → {dst}[/dim]")
-            try:
-                risks = await sync.list_deletion_risks(src, dst, exclude)
-                all_risks.extend(risks)
-            except Exception as exc:
-                log.write(f"[red]Risk check failed: {exc}[/red]")
-                return
+
+        all_risks: list[sync.DeletionRisk] = []
+        if dry_run:
+            for src, dst, exclude in pairs:
+                if not Path(dst).exists():
+                    log.write(f"[yellow]Destination not found (will be created): {dst}[/yellow]")
+                    continue
+                log.write(f"[dim]Checking for deletion risks: {src} → {dst}[/dim]")
+                try:
+                    risks = await sync.list_deletion_risks(src, dst, exclude)
+                    all_risks.extend(risks)
+                except Exception as exc:
+                    log.write(f"[red]Risk check failed: {exc}[/red]")
+                    return
 
         confirmed = await self.push_screen_wait(ConfirmSyncModal(all_risks, dry_run))
         if not confirmed:
