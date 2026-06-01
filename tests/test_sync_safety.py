@@ -1,7 +1,7 @@
 """Tests for destination path safety guards in sync.py."""
 import pytest
 
-from datasync.sync import check_destination_safety
+from superguardian.sync import check_destination_safety
 
 
 DISC_ROOT = "/run/media/anthony/SAVE_A"

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-from datasync.app import DataSyncApp
+from superguardian.app import SuperGuardianApp
 
 if __name__ == "__main__":
-    DataSyncApp().run()
+    SuperGuardianApp().run()

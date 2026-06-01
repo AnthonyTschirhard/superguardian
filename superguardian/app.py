@@ -1,4 +1,4 @@
-"""DataSync TUI — lazygit-style backup manager."""
+"""Super Guardian TUI — lazygit-style backup manager."""
 from __future__ import annotations
 
 import os
@@ -351,7 +351,7 @@ class Part1View(SyncDetailView):
                 for m in mappings
             )
         else:
-            lines = "  [yellow]No mappings configured — edit ~/.config/datasync/config.yaml[/yellow]"
+            lines = "  [yellow]No mappings configured — edit ~/.config/superguardian/config.yaml[/yellow]"
         self.query_one("#p1-mappings", Static).update(lines)
 
     @property
@@ -488,9 +488,9 @@ class Part4View(ScrollableContainer):
 
 # ── main app ──────────────────────────────────────────────────────────────────
 
-class DataSyncApp(App):
+class SuperGuardianApp(App):
     CSS = CSS
-    TITLE = "DataSync"
+    TITLE = "Super Guardian"
 
     BINDINGS = [
         Binding("q", "quit", "Quit"),
