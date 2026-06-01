@@ -344,15 +344,43 @@ class Part1View(SyncDetailView):
             f"SAVE_A  {_disc_badge(mounted)}  {save_a}\n"
             f"[dim]{last_str}[/dim]"
         )
-        mappings = cfg.get("laptop_to_save_a") or []
-        if mappings:
-            lines = "\n".join(
-                f"  [dim]{m['from']}[/dim]  →  [dim]{m['to']}[/dim]"
-                for m in mappings
+        if not (cfg.get("laptop_to_save_a") or []):
+            self.query_one("#p1-mappings", Static).update(
+                "  [yellow]No mappings configured — edit ~/.config/superguardian/config.yaml[/yellow]"
             )
-        else:
-            lines = "  [yellow]No mappings configured — edit ~/.config/superguardian/config.yaml[/yellow]"
-        self.query_one("#p1-mappings", Static).update(lines)
+        # else: update_mapping_summaries() owns the MAPPINGS display
+
+    def update_mapping_summaries(
+        self,
+        pairs: list[tuple[str, str, list[str]]],
+        summaries: list[Any],
+    ) -> None:
+        if not pairs:
+            return
+        lines = []
+        for i, (src, dst, _) in enumerate(pairs):
+            if i >= len(summaries):
+                status = "[dim]—[/dim]"
+            else:
+                s = summaries[i]
+                if s is None:
+                    status = "[dim]scanning…[/dim]"
+                elif s == _SCAN_UNAVAIL:
+                    status = (
+                        "[red]✗ source not found[/red]"
+                        if not Path(src).exists()
+                        else "[yellow]⚠ disc not mounted[/yellow]"
+                    )
+                elif s == _SCAN_ERROR:
+                    status = "[yellow dim]scan error[/yellow dim]"
+                else:
+                    status = _fmt_summary(s)
+            lines.append(
+                f"  [dim]{src}[/dim]\n"
+                f"  [dim]→ {dst}[/dim]\n"
+                f"  {status}"
+            )
+        self.query_one("#p1-mappings", Static).update("\n\n".join(lines))
 
     @property
     def log(self) -> RichLog:
@@ -511,6 +539,8 @@ class SuperGuardianApp(App):
         # int = file count, None = scan in progress, key absent = not yet scanned
         self._pending_counts: dict[str, int | None] = {}
         self._dry_run_summaries: dict[str, sync.DryRunSummary] = {}
+        # per-mapping scan results: None=scanning, int sentinel=error/unavail, DryRunSummary=done
+        self._mapping_summaries: dict[str, list[Any]] = {}
         self._syncing_ops: set[str] = set()
 
     # ── compose ───────────────────────────────────────────────────────────────
@@ -563,6 +593,7 @@ class SuperGuardianApp(App):
             return
         self._pending_counts.clear()
         self._dry_run_summaries.clear()
+        self._mapping_summaries.clear()
         self._refresh_all_views()
         self._scan_all_ops()
 
@@ -574,6 +605,7 @@ class SuperGuardianApp(App):
             return
         self._pending_counts.clear()
         self._dry_run_summaries.clear()
+        self._mapping_summaries.clear()
         self._refresh_all_views()
         self._scan_all_ops()
         self.notify("Config reloaded.")
@@ -585,8 +617,10 @@ class SuperGuardianApp(App):
             return
         self._pending_counts.pop(op, None)
         self._dry_run_summaries.pop(op, None)
+        self._mapping_summaries.pop(op, None)
         self._refresh_op_status(op)
         self._refresh_op_summary(op)
+        self._refresh_mapping_summaries(op)
         self._scan_all_ops(ops=[op])
 
     def action_sync_op(self) -> None:
@@ -727,8 +761,10 @@ class SuperGuardianApp(App):
 
         if status == "success":
             log.write(f"\n[green]Sync complete — {total_files} file(s) transferred.[/green]")
+            self._mapping_summaries.pop(op, None)
             self._dry_run_summaries[op] = sync.DryRunSummary(to_add=0, to_move=0, to_delete=0)
             self._set_pending(op, 0)
+            self._refresh_mapping_summaries(op)
         else:
             log.write(f"\n[red]Sync failed.[/red]")
             self._dry_run_summaries.pop(op, None)
@@ -751,26 +787,41 @@ class SuperGuardianApp(App):
         if not pairs:
             return
 
-        all_accessible = all(
-            Path(src).exists() and Path(dst).exists()
-            for src, dst, _ in pairs
-        )
-        if not all_accessible:
-            self._set_pending(op, _SCAN_UNAVAIL)
-            return
+        n = len(pairs)
+        self._mapping_summaries[op] = [None] * n
+        self._set_pending(op, None)
+        self._refresh_mapping_summaries(op)
 
-        self._set_pending(op, None)  # show "scanning…"
-        try:
-            to_add = to_move = to_delete = 0
-            for src, dst, excl in pairs:
+        to_add = to_move = to_delete = 0
+        any_success = False
+        for i, (src, dst, excl) in enumerate(pairs):
+            if not Path(src).exists():
+                self._mapping_summaries[op][i] = _SCAN_UNAVAIL
+                continue
+            if not Path(dst).exists():
+                self._mapping_summaries[op][i] = _SCAN_UNAVAIL
+                continue
+            try:
                 part = await sync.dry_run_summary(src, dst, excl)
+                self._mapping_summaries[op][i] = part
                 to_add += part.to_add
                 to_move += part.to_move
                 to_delete += part.to_delete
-            summary = sync.DryRunSummary(to_add=to_add, to_move=to_move, to_delete=to_delete)
-            self._dry_run_summaries[op] = summary
+                any_success = True
+            except Exception:
+                self._mapping_summaries[op][i] = _SCAN_ERROR
+
+        self._refresh_mapping_summaries(op)
+
+        if any_success:
+            self._dry_run_summaries[op] = sync.DryRunSummary(
+                to_add=to_add, to_move=to_move, to_delete=to_delete
+            )
             self._set_pending(op, to_add)
-        except Exception:
+        elif all(s == _SCAN_UNAVAIL for s in self._mapping_summaries[op]):
+            self._dry_run_summaries.pop(op, None)
+            self._set_pending(op, _SCAN_UNAVAIL)
+        else:
             self._dry_run_summaries.pop(op, None)
             self._set_pending(op, _SCAN_ERROR)
 
@@ -794,6 +845,17 @@ class SuperGuardianApp(App):
                 view.update_summary(None, scanning=False)
             else:
                 view.update_summary(self._dry_run_summaries.get(op), scanning=False)
+        except Exception:
+            pass
+
+    def _refresh_mapping_summaries(self, op: str) -> None:
+        if op != "part1":
+            return
+        try:
+            view = self.query_one("#detail-part1", Part1View)
+            pairs = self._get_sync_pairs(op)
+            summaries = self._mapping_summaries.get(op, [])
+            view.update_mapping_summaries(pairs, summaries)
         except Exception:
             pass
 
@@ -862,6 +924,7 @@ class SuperGuardianApp(App):
                 self._get_view(op_id).refresh_view(cfg)  # type: ignore[union-attr]
                 self._refresh_op_status(op_id)
                 self._refresh_op_summary(op_id)
+                self._refresh_mapping_summaries(op_id)
             except Exception:
                 pass
 
