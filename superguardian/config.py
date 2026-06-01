@@ -9,6 +9,10 @@ CONFIG_FILE = CONFIG_DIR / "config.yaml"
 DB_FILE = CONFIG_DIR / "history.db"
 
 
+class ConfigError(Exception):
+    """Raised when the config file cannot be parsed."""
+
+
 def _make_template() -> str:
     user = getpass.getuser()
     return f"""\
@@ -22,19 +26,25 @@ discs:
   SAVE_C: /run/media/{user}/SAVE_C
 
 # Primary Save — folders to sync from laptop to SAVE_A
-# Each entry maps a source folder to its destination.
-# Optional 'exclude' accepts rsync patterns (same as --exclude=PATTERN).
-laptop_to_save_a: []
-  # - from: /home/{user}/SAVE/PHOTOS
-  #   to:   /run/media/{user}/SAVE_A/PHOTOS
-  #   exclude:
-  #     - .venv
-  #     - __pycache__
+# Each entry needs 'from' (source) and 'to' (destination).
+# 'exclude' is optional and accepts rsync patterns.
+#
+# laptop_to_save_a:
+#   - from: /home/{user}/Documents
+#     to:   /run/media/{user}/SAVE_A/Documents
+#   - from: /home/{user}/Photos
+#     to:   /run/media/{user}/SAVE_A/Photos
+#     exclude:
+#       - .venv
+#       - __pycache__
+laptop_to_save_a:
 
 # M-DISC — folders on SAVE_A whose contents must be burned to M-DISC
-mdisc_tracked: []
-  # - /run/media/{user}/SAVE_A/PHOTOS
-  # - /run/media/{user}/SAVE_A/MAGIC
+#
+# mdisc_tracked:
+#   - /run/media/{user}/SAVE_A/Photos
+#   - /run/media/{user}/SAVE_A/ImportantDocs
+mdisc_tracked:
 """
 
 
@@ -42,8 +52,14 @@ def load() -> dict[str, Any]:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     if not CONFIG_FILE.exists():
         CONFIG_FILE.write_text(_make_template())
-    with CONFIG_FILE.open() as fh:
-        return yaml.safe_load(fh) or {}
+    try:
+        with CONFIG_FILE.open() as fh:
+            return yaml.safe_load(fh) or {}
+    except yaml.YAMLError as exc:
+        raise ConfigError(
+            f"Cannot parse {CONFIG_FILE} — invalid YAML.\n\n{exc}\n\n"
+            "Fix the file and press R to reload."
+        ) from exc
 
 
 def disc_path(cfg: dict, name: str) -> str:

@@ -533,7 +533,10 @@ class SuperGuardianApp(App):
     def on_mount(self) -> None:
         if not which("rsync"):
             self.notify("rsync not found — install it with: sudo apt install rsync", severity="error")
-        self._cfg = config.load()
+        try:
+            self._cfg = config.load()
+        except config.ConfigError as exc:
+            self.notify(str(exc), severity="error", timeout=60)
         self._refresh_all_views()
         self._scan_all_ops()
 
@@ -553,14 +556,22 @@ class SuperGuardianApp(App):
         self.query_one("#ops-list", ListView).action_cursor_up()
 
     def action_refresh(self) -> None:
-        self._cfg = config.load()
+        try:
+            self._cfg = config.load()
+        except config.ConfigError as exc:
+            self.notify(str(exc), severity="error", timeout=60)
+            return
         self._pending_counts.clear()
         self._dry_run_summaries.clear()
         self._refresh_all_views()
         self._scan_all_ops()
 
     def action_reload_config(self) -> None:
-        self._cfg = config.load()
+        try:
+            self._cfg = config.load()
+        except config.ConfigError as exc:
+            self.notify(str(exc), severity="error", timeout=60)
+            return
         self._pending_counts.clear()
         self._dry_run_summaries.clear()
         self._refresh_all_views()
