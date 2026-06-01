@@ -362,15 +362,7 @@ class Part3View(ScrollableContainer):
         table = self.query_one("#p3-table", DataTable)
         table.clear()
         for f in pending:
-            size_b = f.size
-            for unit in ("B", "KB", "MB", "GB"):
-                if size_b < 1024:
-                    size_str = f"{size_b:.1f} {unit}"
-                    break
-                size_b /= 1024
-            else:
-                size_str = f"{size_b:.1f} TB"
-            table.add_row(f.path, size_str, f.reason)
+            table.add_row(f.path, mdisc.fmt_size(f.size), f.reason)
         try:
             self.app.query_one("#ops-panel", OperationsPanel).set_status(
                 "part3", f"M-DISC\n[dim]{len(pending)} pending[/dim]"

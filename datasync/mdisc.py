@@ -4,6 +4,15 @@ from pathlib import Path
 from . import history
 
 
+def fmt_size(size_bytes: int | float) -> str:
+    n = float(size_bytes)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024:
+            return f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} PB"
+
+
 @dataclass
 class PendingFile:
     path: str
@@ -13,11 +22,7 @@ class PendingFile:
 
     @property
     def size_human(self) -> str:
-        for unit in ("B", "KB", "MB", "GB"):
-            if self.size < 1024:
-                return f"{self.size:.1f} {unit}"
-            self.size /= 1024
-        return f"{self.size:.1f} TB"
+        return fmt_size(self.size)
 
 
 def scan_pending(tracked_dirs: list[str]) -> list[PendingFile]:
@@ -52,9 +57,4 @@ def scan_pending(tracked_dirs: list[str]) -> list[PendingFile]:
 
 
 def total_pending_size(files: list[PendingFile]) -> str:
-    total = sum(f.size for f in files)
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if total < 1024:
-            return f"{total:.1f} {unit}"
-        total /= 1024
-    return f"{total:.1f} PB"
+    return fmt_size(sum(f.size for f in files))
