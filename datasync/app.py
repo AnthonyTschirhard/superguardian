@@ -538,7 +538,7 @@ class DataSyncApp(App):
 
     @work(exclusive=True)
     async def _check_risks_then_sync(self, op: str, *, dry_run: bool) -> None:
-        """Check for deletion risks, confirm with user, then run sync."""
+        """Check for deletion risks, then show confirmation modal via callback."""
         log = self._get_log(op)
         log.clear()
 
@@ -547,7 +547,6 @@ class DataSyncApp(App):
             log.write("[yellow]No mappings configured for this operation.[/yellow]")
             return
 
-        # Check all pairs for deletion risks
         all_risks: list[sync.DeletionRisk] = []
         for src, dst in pairs:
             if not Path(src).exists():
@@ -564,11 +563,16 @@ class DataSyncApp(App):
                 log.write(f"[red]Risk check failed: {exc}[/red]")
                 return
 
-        confirmed = await self.push_screen_wait(ConfirmSyncModal(all_risks, dry_run))
-        if not confirmed:
-            log.write("[dim]Cancelled.[/dim]")
-            return
+        def _on_confirmed(confirmed: bool) -> None:
+            if confirmed:
+                self._do_sync(op, pairs, dry_run=dry_run)
+            else:
+                log.write("[dim]Cancelled.[/dim]")
 
+        self.push_screen(ConfirmSyncModal(all_risks, dry_run), _on_confirmed)
+
+    @work(exclusive=True)
+    async def _do_sync(self, op: str, pairs: list[tuple[str, str]], *, dry_run: bool) -> None:
         await self._execute_sync(op, pairs, dry_run=dry_run)
 
     async def _execute_sync(
