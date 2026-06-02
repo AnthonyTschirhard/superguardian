@@ -895,8 +895,17 @@ class SuperGuardianApp(App):
 
     @work(thread=True)
     def _do_scan_git_repos(self) -> None:
-        paths = self._cfg.get("git_repos") or []
-        repos = [git_ops.scan_repo(str(Path(p).expanduser())) for p in paths]
+        entries = self._cfg.get("git_repos") or []
+        repos = []
+        for entry in entries:
+            if isinstance(entry, dict):
+                path = str(Path(entry["path"]).expanduser())
+                worktree = entry.get("worktree")
+                worktree = str(Path(worktree).expanduser()) if worktree else None
+            else:
+                path = str(Path(entry).expanduser())
+                worktree = None
+            repos.append(git_ops.scan_repo(path, worktree=worktree))
         self.call_from_thread(self._apply_git_scan, repos)
 
     def _apply_git_scan(self, repos: list[git_ops.RepoStatus]) -> None:

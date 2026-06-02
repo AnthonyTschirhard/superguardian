@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import subprocess
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -14,7 +14,7 @@ class RepoStatus:
     name: str
     is_bare: bool
     current_branch: str | None   # None for bare repos or detached HEAD
-    dirty: bool                  # uncommitted changes (always False for bare)
+    dirty: bool                  # uncommitted changes
     unpushed: dict[str, int]     # branch → commit count ahead of upstream
     remotes: list[str]
     error: str | None = None
@@ -24,8 +24,13 @@ class RepoStatus:
         return sum(self.unpushed.values())
 
 
-def scan_repo(path: str) -> RepoStatus:
-    """Scan a single git repo (normal or bare) and return its status."""
+def scan_repo(path: str, worktree: str | None = None) -> RepoStatus:
+    """Scan a single git repo (normal or bare) and return its status.
+
+    worktree: explicit work-tree path for bare repos that manage a live directory
+    (e.g. a dotfiles bare repo whose work-tree is $HOME). Falls back to reading
+    core.worktree from the repo's own git config when not supplied.
+    """
     p = Path(path).expanduser().resolve()
     name = p.name
 
@@ -35,8 +40,13 @@ def scan_repo(path: str) -> RepoStatus:
             capture_output=True, text=True, timeout=10,
         )
 
-    check = _git("rev-parse", "--git-dir")
-    if check.returncode != 0:
+    def _git_wt(wt: str, *args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", "-C", str(p), "--work-tree", wt, *args],
+            capture_output=True, text=True, timeout=10,
+        )
+
+    if _git("rev-parse", "--git-dir").returncode != 0:
         return RepoStatus(
             path=str(p), name=name, is_bare=False, current_branch=None,
             dirty=False, unpushed={}, remotes=[],
@@ -44,15 +54,29 @@ def scan_repo(path: str) -> RepoStatus:
         )
 
     is_bare = _git("rev-parse", "--is-bare-repository").stdout.strip() == "true"
+
+    # Resolve effective work-tree for bare repos (dotfiles pattern)
+    effective_wt: str | None = worktree
+    if is_bare and effective_wt is None:
+        wt_cfg = _git("config", "--get", "core.worktree")
+        if wt_cfg.returncode == 0 and wt_cfg.stdout.strip():
+            effective_wt = wt_cfg.stdout.strip()
+
     remotes = [r for r in _git("remote").stdout.splitlines() if r]
 
     current_branch: str | None = None
     dirty = False
+
     if not is_bare:
         branch_out = _git("symbolic-ref", "--short", "HEAD")
         if branch_out.returncode == 0:
             current_branch = branch_out.stdout.strip()
         dirty = bool(_git("status", "--porcelain").stdout.strip())
+    elif effective_wt is not None:
+        branch_out = _git_wt(effective_wt, "symbolic-ref", "--short", "HEAD")
+        if branch_out.returncode == 0:
+            current_branch = branch_out.stdout.strip()
+        dirty = bool(_git_wt(effective_wt, "status", "--porcelain").stdout.strip())
 
     unpushed: dict[str, int] = {}
     if remotes:

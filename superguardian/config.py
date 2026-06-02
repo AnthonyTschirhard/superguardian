@@ -48,11 +48,13 @@ mdisc_tracked:
 
 # Git Repos — list of git repositories (normal or bare) to back up by pushing
 # to their configured remotes. Press 's' on the Git tab to push all branches.
+# Use the dict form with 'worktree' for bare repos that manage a live directory
+# (e.g. the dotfiles-bare-repo pattern where work-tree is $HOME).
 #
 # git_repos:
 #   - /home/{user}/source/myproject
-#   - /home/{user}/source/anotherrepo
-#   - /backup/repos/myproject.git
+#   - path: /home/{user}/.dotfiles
+#     worktree: /home/{user}
 git_repos:
 """
 

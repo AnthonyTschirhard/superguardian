@@ -160,6 +160,74 @@ def test_scan_pushed_commits_shows_zero_unpushed(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# scan_repo — bare repo with explicit worktree (dotfiles pattern)
+# ---------------------------------------------------------------------------
+
+def test_scan_bare_with_worktree_detects_dirty(tmp_path):
+    # Simulate the dotfiles bare-repo pattern:
+    # bare repo at tmp/dotfiles.git, work-tree at tmp/home
+    home = tmp_path / "home"
+    home.mkdir()
+
+    # Init a normal repo, commit a file, then clone --bare
+    seed = tmp_path / "_seed"
+    seed.mkdir()
+    _init_repo(seed)
+    (seed / ".bashrc").write_text("original")
+    _git(seed, "add", ".bashrc")
+    _git(seed, "commit", "-m", "track bashrc")
+
+    bare = tmp_path / "dotfiles.git"
+    subprocess.run(["git", "clone", "--bare", str(seed), str(bare)],
+                   capture_output=True, check=True)
+
+    # Check out the tracked file into the fake home
+    subprocess.run(
+        ["git", "-C", str(bare), "--work-tree", str(home), "checkout", "HEAD", "--", ".bashrc"],
+        capture_output=True, check=True,
+    )
+
+    # Scan with no worktree → dirty should be False (bare, no effective work-tree)
+    result_no_wt = scan_repo(str(bare))
+    assert result_no_wt.is_bare is True
+    assert result_no_wt.dirty is False
+    assert result_no_wt.current_branch is None
+
+    # Now modify the file so it is dirty
+    (home / ".bashrc").write_text("modified content")
+
+    # Scan with explicit worktree → dirty should be True
+    result_with_wt = scan_repo(str(bare), worktree=str(home))
+    assert result_with_wt.is_bare is True
+    assert result_with_wt.dirty is True
+    assert result_with_wt.current_branch is not None
+
+
+def test_scan_bare_with_worktree_clean(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+
+    seed = tmp_path / "_seed"
+    seed.mkdir()
+    _init_repo(seed)
+    (seed / ".bashrc").write_text("content")
+    _git(seed, "add", ".bashrc")
+    _git(seed, "commit", "-m", "track bashrc")
+
+    bare = tmp_path / "dotfiles.git"
+    subprocess.run(["git", "clone", "--bare", str(seed), str(bare)],
+                   capture_output=True, check=True)
+
+    subprocess.run(
+        ["git", "-C", str(bare), "--work-tree", str(home), "checkout", "HEAD", "--", ".bashrc"],
+        capture_output=True, check=True,
+    )
+
+    result = scan_repo(str(bare), worktree=str(home))
+    assert result.dirty is False
+
+
+# ---------------------------------------------------------------------------
 # RepoStatus.total_unpushed
 # ---------------------------------------------------------------------------
 
