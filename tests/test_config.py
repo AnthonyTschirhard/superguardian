@@ -34,6 +34,7 @@ def test_template_sections_present():
     # keys with no entries parse to None, not missing
     assert "laptop_to_save_a" in parsed
     assert "mdisc_tracked" in parsed
+    assert "git_repos" in parsed
 
 
 def test_template_empty_lists_load_as_falsy():
@@ -43,6 +44,7 @@ def test_template_empty_lists_load_as_falsy():
     # code uses `cfg.get(...) or []` — None and [] both work
     assert not parsed.get("laptop_to_save_a")
     assert not parsed.get("mdisc_tracked")
+    assert not parsed.get("git_repos")
 
 
 # ── load ──────────────────────────────────────────────────────────────────────

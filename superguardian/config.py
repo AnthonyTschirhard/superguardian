@@ -45,6 +45,15 @@ laptop_to_save_a:
 #   - /run/media/{user}/SAVE_A/Photos
 #   - /run/media/{user}/SAVE_A/ImportantDocs
 mdisc_tracked:
+
+# Git Repos — list of git repositories (normal or bare) to back up by pushing
+# to their configured remotes. Press 's' on the Git tab to push all branches.
+#
+# git_repos:
+#   - /home/{user}/source/myproject
+#   - /home/{user}/source/anotherrepo
+#   - /backup/repos/myproject.git
+git_repos:
 """
 
 

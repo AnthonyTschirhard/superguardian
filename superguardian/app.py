@@ -30,12 +30,15 @@ from textual.widgets import (
     Static,
 )
 
-from . import config, history, mdisc, sync
+from rich.text import Text
+
+from . import config, git as git_ops, history, mdisc, sync
 from .config import is_mounted
 
 # ── constants ─────────────────────────────────────────────────────────────────
 
 OPERATIONS: list[tuple[str, str, str]] = [
+    ("git",      "Git Repos",      ""),
     ("part1",    "Primary Save",   ""),
     ("part2_ab", "Full Mirror",    ""),
     ("part2_ac", "Offsite Mirror", ""),
@@ -320,6 +323,104 @@ class SyncDetailView(ScrollableContainer):
             self._summary_static.update(f"[dim]Scanning… ({elapsed}s)[/dim]")
 
 
+class GitView(ScrollableContainer):
+    """Git repositories tab — scan status and push-all."""
+
+    def on_mount(self) -> None:
+        self._repos: list[git_ops.RepoStatus] = []
+        self._scanning = False
+        self._pushing = False
+
+    def compose(self) -> ComposeResult:
+        yield Label("[bold]Git Repositories[/bold]")
+        yield Label("", id="git-status")
+        yield Label("REPOSITORIES", classes="section-hdr")
+        table = DataTable(id="git-table", zebra_stripes=True)
+        table.add_columns("Name", "Type", "Branch", "Dirty", "Unpushed", "Remotes")
+        yield table
+        yield Label("[dim]s: push all   d: rescan[/dim]")
+        yield Label("PUSH LOG", classes="section-hdr")
+        yield RichLog(id="git-log", highlight=True, markup=True)
+
+    def refresh_view(self, cfg: dict[str, Any]) -> None:
+        pass  # data arrives via refresh_status() after background scan
+
+    def refresh_status(
+        self,
+        repos: list[git_ops.RepoStatus],
+        *,
+        scanning: bool,
+    ) -> None:
+        self._repos = repos
+        self._scanning = scanning
+
+        if scanning:
+            self.query_one("#git-status", Label).update("[dim]Scanning repositories…[/dim]")
+            self.query_one("#git-table", DataTable).clear()
+            return
+
+        total = len(repos)
+        errors = sum(1 for r in repos if r.error)
+        total_unpushed = sum(r.total_unpushed for r in repos if not r.error)
+
+        if total == 0:
+            status = "[dim]No repositories configured — add git_repos to config.yaml[/dim]"
+        elif total_unpushed:
+            status = (
+                f"[bold]{total}[/bold] repos"
+                f"  [bold yellow]{total_unpushed}[/bold yellow] unpushed commits"
+                + (f"  [red]{errors} errors[/red]" if errors else "")
+            )
+        else:
+            status = (
+                f"[bold]{total}[/bold] repos  [green]✓ all pushed[/green]"
+                + (f"  [red]{errors} errors[/red]" if errors else "")
+            )
+        self.query_one("#git-status", Label).update(status)
+
+        table = self.query_one("#git-table", DataTable)
+        table.clear()
+        for r in repos:
+            if r.error:
+                table.add_row(
+                    Text(r.name, style="dim"),
+                    Text("?"),
+                    Text("?"),
+                    Text("?"),
+                    Text("?"),
+                    Text(r.error, style="red"),
+                    key=r.path,
+                )
+                continue
+            repo_type = Text("bare", style="dim") if r.is_bare else Text("normal")
+            branch = Text(
+                r.current_branch or ("bare" if r.is_bare else "detached"),
+                style="dim" if not r.current_branch else "",
+            )
+            if r.is_bare:
+                dirty = Text("—", style="dim")
+            elif r.dirty:
+                dirty = Text("✗ dirty", style="yellow")
+            else:
+                dirty = Text("✓ clean", style="green")
+            if not r.remotes:
+                unpushed_text = Text("—", style="dim")
+            elif r.total_unpushed == 0:
+                unpushed_text = Text("✓ 0", style="green")
+            else:
+                unpushed_text = Text(str(r.total_unpushed), style="bold yellow")
+            remotes_str = ", ".join(r.remotes) if r.remotes else "none"
+            remotes_text = Text(remotes_str, style="dim" if not r.remotes else "")
+            table.add_row(
+                r.name, repo_type, branch, dirty, unpushed_text, remotes_text,
+                key=r.path,
+            )
+
+    @property
+    def log(self) -> RichLog:
+        return self.query_one("#git-log", RichLog)
+
+
 class Part1View(SyncDetailView):
     def compose(self) -> ComposeResult:
         yield Label("[bold]Primary Save[/bold]")
@@ -531,7 +632,7 @@ class SuperGuardianApp(App):
         Binding("k,up", "cursor_up", "Up", show=False),
     ]
 
-    current_op: reactive[str] = reactive("part1")
+    current_op: reactive[str] = reactive("git")
 
     def __init__(self) -> None:
         super().__init__()
@@ -550,7 +651,8 @@ class SuperGuardianApp(App):
             yield OperationsPanel(id="ops-panel")
             with Vertical(id="detail-panel"):
                 yield Label("", id="detail-title", classes="panel-title")
-                with ContentSwitcher(initial="detail-part1", id="switcher"):
+                with ContentSwitcher(initial="detail-git", id="switcher"):
+                    yield GitView(id="detail-git", classes="part-view")
                     yield Part1View(id="detail-part1", classes="part-view")
                     yield Part2View("part2_ab", "SAVE_B", id="detail-part2_ab", classes="part-view")
                     yield Part2View("part2_ac", "SAVE_C", id="detail-part2_ac", classes="part-view")
@@ -569,6 +671,8 @@ class SuperGuardianApp(App):
             self.notify(str(exc), severity="error", timeout=60)
         self._refresh_all_views()
         self._scan_all_ops()
+        self._start_git_scan()
+        self._update_detail_title("git")
 
     # ── messages ──────────────────────────────────────────────────────────────
 
@@ -596,6 +700,7 @@ class SuperGuardianApp(App):
         self._mapping_summaries.clear()
         self._refresh_all_views()
         self._scan_all_ops()
+        self._start_git_scan()
 
     def action_reload_config(self) -> None:
         try:
@@ -608,10 +713,14 @@ class SuperGuardianApp(App):
         self._mapping_summaries.clear()
         self._refresh_all_views()
         self._scan_all_ops()
+        self._start_git_scan()
         self.notify("Config reloaded.")
 
     def action_rescan(self) -> None:
         op = self.current_op
+        if op == "git":
+            self._start_git_scan()
+            return
         if op in ("part3", "part4"):
             self.notify("No pending-file scan for this operation.", severity="warning")
             return
@@ -624,6 +733,9 @@ class SuperGuardianApp(App):
         self._scan_all_ops(ops=[op])
 
     def action_sync_op(self) -> None:
+        if self.current_op == "git":
+            self._git_push_all()
+            return
         if self.current_op == "part4":
             self.notify("Not implemented yet.", severity="warning")
             return
@@ -770,6 +882,71 @@ class SuperGuardianApp(App):
             self._dry_run_summaries.pop(op, None)
             self._refresh_op_summary(op)
 
+    # ── git scan & push ───────────────────────────────────────────────────────
+
+    def _start_git_scan(self) -> None:
+        try:
+            view = self.query_one("#detail-git", GitView)
+            view.refresh_status([], scanning=True)
+        except Exception:
+            pass
+        self._refresh_op_status("git")
+        self._do_scan_git_repos()
+
+    @work(thread=True)
+    def _do_scan_git_repos(self) -> None:
+        paths = self._cfg.get("git_repos") or []
+        repos = [git_ops.scan_repo(str(Path(p).expanduser())) for p in paths]
+        self.call_from_thread(self._apply_git_scan, repos)
+
+    def _apply_git_scan(self, repos: list[git_ops.RepoStatus]) -> None:
+        try:
+            view = self.query_one("#detail-git", GitView)
+            view.refresh_status(repos, scanning=False)
+        except Exception:
+            pass
+        self._refresh_op_status("git")
+
+    @work(exclusive=True, group="git-push")
+    async def _git_push_all(self) -> None:
+        view = self.query_one("#detail-git", GitView)
+        log = view.log
+        log.clear()
+        repos = list(view._repos)
+
+        pushable = [r for r in repos if not r.error and r.remotes]
+        if not repos:
+            log.write("[yellow]No repositories configured — add git_repos to config.yaml[/yellow]")
+            return
+        if not pushable:
+            log.write("[yellow]No repositories have remotes configured — nothing to push.[/yellow]")
+            return
+
+        view._pushing = True
+        self._refresh_op_status("git")
+
+        any_fail = False
+        for repo in repos:
+            if repo.error:
+                log.write(f"\n[dim]── {repo.name}: skipped ({repo.error})[/dim]")
+                continue
+            if not repo.remotes:
+                log.write(f"\n[dim]── {repo.name}: no remotes, skipped[/dim]")
+                continue
+            log.write(f"\n[bold cyan]── {repo.name}[/bold cyan]  [dim]{repo.path}[/dim]")
+            ok = await git_ops.push_all_branches(repo.path, log.write)
+            if not ok:
+                any_fail = True
+
+        view._pushing = False
+
+        if any_fail:
+            log.write("\n[bold red]Some pushes failed.[/bold red]")
+        else:
+            log.write("\n[bold green]All pushes complete.[/bold green]")
+
+        self._start_git_scan()
+
     # ── background pending-file scan ──────────────────────────────────────────
 
     @work(exclusive=True, group="scan")
@@ -914,7 +1091,7 @@ class SuperGuardianApp(App):
             return self.query_one("#detail-part2_ac RichLog", RichLog)
         return self.query_one(f"#detail-{op} RichLog", RichLog)
 
-    def _get_view(self, op: str) -> Part1View | Part2View | Part3View | Part4View:
+    def _get_view(self, op: str) -> GitView | Part1View | Part2View | Part3View | Part4View:
         return self.query_one(f"#detail-{op}")  # type: ignore[return-value]
 
     def _refresh_all_views(self) -> None:
@@ -935,7 +1112,28 @@ class SuperGuardianApp(App):
         def badge(ok: bool) -> str:
             return "[green]●[/green]" if ok else "[red]✗[/red]"
 
-        if op_id == "part1":
+        if op_id == "git":
+            try:
+                view = self.query_one("#detail-git", GitView)
+                if view._scanning:
+                    panel.set_status("git", "Git Repos\n[dim]scanning…[/dim]")
+                elif view._pushing:
+                    panel.set_status("git", "Git Repos\n[bold yellow]Pushing…[/bold yellow]")
+                else:
+                    repos = view._repos
+                    total_unpushed = sum(r.total_unpushed for r in repos if not r.error)
+                    if not repos:
+                        panel.set_status("git", "Git Repos\n[dim]—[/dim]")
+                    elif total_unpushed:
+                        panel.set_status(
+                            "git",
+                            f"Git Repos\n[bold yellow]{total_unpushed}[/bold yellow] [dim]unpushed[/dim]",
+                        )
+                    else:
+                        panel.set_status("git", f"Git Repos\n[green]✓ all pushed[/green]")
+            except Exception:
+                panel.set_status("git", "Git Repos\n[dim]—[/dim]")
+        elif op_id == "part1":
             a_ok = is_mounted(config.disc_path(cfg, "SAVE_A"))
             last = history.last_successful_sync("part1")
             last_str = _ago(last["finished_at"]) if last else "never"
