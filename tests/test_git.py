@@ -234,7 +234,8 @@ def test_scan_bare_with_worktree_clean(tmp_path):
 def test_total_unpushed_sums_branches():
     r = RepoStatus(
         path="/x", name="x", is_bare=False, current_branch="main",
-        dirty=False, unpushed={"main": 3, "feat": 5}, remotes=["origin"],
+        dirty=False, unpushed={"main": 3, "feat": 5},
+        untracked_branches=[], remotes=["origin"],
     )
     assert r.total_unpushed == 8
 
@@ -242,6 +243,42 @@ def test_total_unpushed_sums_branches():
 def test_total_unpushed_empty():
     r = RepoStatus(
         path="/x", name="x", is_bare=False, current_branch="main",
-        dirty=False, unpushed={}, remotes=["origin"],
+        dirty=False, unpushed={}, untracked_branches=[], remotes=["origin"],
     )
     assert r.total_unpushed == 0
+
+
+# ---------------------------------------------------------------------------
+# scan_repo — untracked branches (remote configured, no upstream set)
+# ---------------------------------------------------------------------------
+
+def test_scan_repo_with_remote_but_no_upstream_tracking(tmp_path):
+    # Repo has a remote but branch has never been pushed → untracked_branches
+    remote = _make_remote_with_commit(tmp_path)
+
+    # Create a fresh repo and add the remote without pushing
+    local = tmp_path / "local"
+    local.mkdir()
+    _init_repo(local)
+    _commit(local, "first commit")
+    _git(local, "remote", "add", "origin", str(remote))
+
+    result = scan_repo(str(local))
+    assert result.error is None
+    assert result.remotes == ["origin"]
+    assert result.total_unpushed == 0          # no upstream ref to compare against
+    assert "master" in result.untracked_branches or "main" in result.untracked_branches
+
+
+def test_scan_repo_pushed_branch_has_no_untracked(tmp_path):
+    remote = _make_remote_with_commit(tmp_path)
+
+    clone = tmp_path / "clone"
+    subprocess.run(["git", "clone", str(remote), str(clone)],
+                   capture_output=True, check=True)
+    _git(clone, "config", "user.email", "test@example.com")
+    _git(clone, "config", "user.name", "Test")
+
+    result = scan_repo(str(clone))
+    assert result.error is None
+    assert result.untracked_branches == []

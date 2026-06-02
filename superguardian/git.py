@@ -16,6 +16,7 @@ class RepoStatus:
     current_branch: str | None   # None for bare repos or detached HEAD
     dirty: bool                  # uncommitted changes
     unpushed: dict[str, int]     # branch → commit count ahead of upstream
+    untracked_branches: list[str]  # local branches with no upstream tracking ref
     remotes: list[str]
     error: str | None = None
 
@@ -49,7 +50,7 @@ def scan_repo(path: str, worktree: str | None = None) -> RepoStatus:
     if _git("rev-parse", "--git-dir").returncode != 0:
         return RepoStatus(
             path=str(p), name=name, is_bare=False, current_branch=None,
-            dirty=False, unpushed={}, remotes=[],
+            dirty=False, unpushed={}, untracked_branches=[], remotes=[],
             error="not a git repository",
         )
 
@@ -79,6 +80,7 @@ def scan_repo(path: str, worktree: str | None = None) -> RepoStatus:
         dirty = bool(_git_wt(effective_wt, "status", "--porcelain").stdout.strip())
 
     unpushed: dict[str, int] = {}
+    untracked_branches: list[str] = []
     if remotes:
         ref_out = _git(
             "for-each-ref",
@@ -87,9 +89,11 @@ def scan_repo(path: str, worktree: str | None = None) -> RepoStatus:
         )
         for line in ref_out.stdout.splitlines():
             parts = line.strip().split(" ", 1)
-            if len(parts) != 2 or not parts[1].strip():
+            branch = parts[0]
+            upstream = parts[1].strip() if len(parts) == 2 else ""
+            if not upstream:
+                untracked_branches.append(branch)
                 continue
-            branch, upstream = parts[0], parts[1].strip()
             count_out = _git("rev-list", "--count", f"{upstream}..{branch}")
             if count_out.returncode == 0:
                 try:
@@ -106,6 +110,7 @@ def scan_repo(path: str, worktree: str | None = None) -> RepoStatus:
         current_branch=current_branch,
         dirty=dirty,
         unpushed=unpushed,
+        untracked_branches=untracked_branches,
         remotes=remotes,
     )
 
@@ -128,9 +133,9 @@ async def push_all_branches(path: str, on_line: Callable[[str], None]) -> bool:
 
     all_ok = True
     for remote in remotes:
-        on_line(f"[bold]→ git push --all {remote}[/bold]")
+        on_line(f"[bold]→ git push -u --all {remote}[/bold]")
         proc = await asyncio.create_subprocess_exec(
-            "git", "-C", str(p), "push", remote, "--all",
+            "git", "-C", str(p), "push", "-u", remote, "--all",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
         )

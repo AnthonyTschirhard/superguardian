@@ -362,20 +362,24 @@ class GitView(ScrollableContainer):
         total = len(repos)
         errors = sum(1 for r in repos if r.error)
         total_unpushed = sum(r.total_unpushed for r in repos if not r.error)
+        never_pushed = sum(
+            1 for r in repos
+            if not r.error and r.remotes and r.untracked_branches
+        )
 
         if total == 0:
             status = "[dim]No repositories configured — add git_repos to config.yaml[/dim]"
-        elif total_unpushed:
-            status = (
-                f"[bold]{total}[/bold] repos"
-                f"  [bold yellow]{total_unpushed}[/bold yellow] unpushed commits"
-                + (f"  [red]{errors} errors[/red]" if errors else "")
-            )
         else:
-            status = (
-                f"[bold]{total}[/bold] repos  [green]✓ all pushed[/green]"
-                + (f"  [red]{errors} errors[/red]" if errors else "")
-            )
+            parts = [f"[bold]{total}[/bold] repos"]
+            if total_unpushed:
+                parts.append(f"[bold yellow]{total_unpushed}[/bold yellow] unpushed commits")
+            if never_pushed:
+                parts.append(f"[bold magenta]{never_pushed}[/bold magenta] never pushed")
+            if not total_unpushed and not never_pushed:
+                parts.append("[green]✓ all pushed[/green]")
+            if errors:
+                parts.append(f"[red]{errors} errors[/red]")
+            status = "  ".join(parts)
         self.query_one("#git-status", Label).update(status)
 
         table = self.query_one("#git-table", DataTable)
@@ -397,7 +401,7 @@ class GitView(ScrollableContainer):
                 r.current_branch or ("bare" if r.is_bare else "detached"),
                 style="dim" if not r.current_branch else "",
             )
-            if r.is_bare:
+            if r.is_bare and r.current_branch is None:
                 dirty = Text("—", style="dim")
             elif r.dirty:
                 dirty = Text("✗ dirty", style="yellow")
@@ -405,6 +409,8 @@ class GitView(ScrollableContainer):
                 dirty = Text("✓ clean", style="green")
             if not r.remotes:
                 unpushed_text = Text("—", style="dim")
+            elif r.untracked_branches and r.total_unpushed == 0:
+                unpushed_text = Text("? never pushed", style="magenta")
             elif r.total_unpushed == 0:
                 unpushed_text = Text("✓ 0", style="green")
             else:
@@ -1131,12 +1137,21 @@ class SuperGuardianApp(App):
                 else:
                     repos = view._repos
                     total_unpushed = sum(r.total_unpushed for r in repos if not r.error)
+                    never_pushed = sum(
+                        1 for r in repos
+                        if not r.error and r.remotes and r.untracked_branches
+                    )
                     if not repos:
                         panel.set_status("git", "Git Repos\n[dim]—[/dim]")
                     elif total_unpushed:
                         panel.set_status(
                             "git",
                             f"Git Repos\n[bold yellow]{total_unpushed}[/bold yellow] [dim]unpushed[/dim]",
+                        )
+                    elif never_pushed:
+                        panel.set_status(
+                            "git",
+                            f"Git Repos\n[magenta]{never_pushed}[/magenta] [dim]never pushed[/dim]",
                         )
                     else:
                         panel.set_status("git", f"Git Repos\n[green]✓ all pushed[/green]")
