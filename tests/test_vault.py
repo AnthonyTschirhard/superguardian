@@ -193,7 +193,7 @@ def test_run_backup_dismounts_on_success():
         patch("superguardian.vault.find_ente_password", return_value="ente-pw"),
         patch("superguardian.vault.export_ente_otp", AsyncMock()),
         patch("superguardian.vault.git_commit", AsyncMock()),
-        patch("superguardian.vault.dismount", AsyncMock()) as m_dismount,
+        patch("superguardian.vault.dismount", AsyncMock(return_value=0)) as m_dismount,
     ):
         _run(run_backup(_vcfg(), "veracrypt-pw"))
     m_mount.assert_awaited_once()
@@ -204,7 +204,7 @@ def test_run_backup_dismounts_even_when_firefox_export_fails():
     with (
         patch("superguardian.vault.mount", AsyncMock()),
         patch("superguardian.vault.export_firefox", AsyncMock(side_effect=VaultError("boom"))),
-        patch("superguardian.vault.dismount", AsyncMock()) as m_dismount,
+        patch("superguardian.vault.dismount", AsyncMock(return_value=0)) as m_dismount,
     ):
         with pytest.raises(VaultError, match="boom"):
             _run(run_backup(_vcfg(), "veracrypt-pw"))
@@ -218,9 +218,27 @@ def test_run_backup_dismounts_even_when_ente_export_fails():
         patch("superguardian.vault.find_ente_password", return_value="ente-pw"),
         patch("superguardian.vault.export_ente_otp", AsyncMock(side_effect=VaultError("boom"))),
         patch("superguardian.vault.git_commit", AsyncMock()) as m_commit,
-        patch("superguardian.vault.dismount", AsyncMock()) as m_dismount,
+        patch("superguardian.vault.dismount", AsyncMock(return_value=0)) as m_dismount,
     ):
         with pytest.raises(VaultError, match="boom"):
             _run(run_backup(_vcfg(), "veracrypt-pw"))
     m_commit.assert_not_awaited()  # must not commit a partial/failed backup
     m_dismount.assert_awaited_once()
+
+
+def test_run_backup_warns_loudly_when_dismount_itself_fails():
+    # Regression test: confirmed live that veracrypt dismount can fail
+    # (e.g. "target is busy") even with --force. run_backup() must not
+    # silently swallow that — a caller ignoring it could report "backup
+    # complete" while the vault is still mounted and decrypted.
+    logged: list[str] = []
+    with (
+        patch("superguardian.vault.mount", AsyncMock()),
+        patch("superguardian.vault.export_firefox", AsyncMock()),
+        patch("superguardian.vault.find_ente_password", return_value="ente-pw"),
+        patch("superguardian.vault.export_ente_otp", AsyncMock()),
+        patch("superguardian.vault.git_commit", AsyncMock()),
+        patch("superguardian.vault.dismount", AsyncMock(return_value=1)),
+    ):
+        _run(run_backup(_vcfg(), "veracrypt-pw", log=logged.append))
+    assert any("WARNING" in line and "still be mounted" in line for line in logged)

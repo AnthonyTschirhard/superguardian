@@ -65,7 +65,15 @@ async def mount(container: str, mountpoint: str, password: str) -> None:
     )
 
 
-async def dismount(mountpoint: str) -> None:
+async def dismount(mountpoint: str) -> int:
+    """
+    Returns veracrypt's exit code so callers can detect a failed dismount
+    instead of silently assuming it worked — e.g. "target is busy" (a
+    process with its cwd inside the mountpoint) is a real failure mode,
+    confirmed live, that --force does not always override. A caller that
+    ignores a nonzero return here could report "backup complete" while the
+    vault is still sitting mounted and decrypted.
+    """
     # --force: without it, a volume VeraCrypt considers "in use" (e.g. a
     # desktop file indexer briefly touching the freshly-mounted directory)
     # makes it drop into an interactive "Continue? (y/n)" confirmation
@@ -76,11 +84,13 @@ async def dismount(mountpoint: str) -> None:
     # opened, so forcing past an external/spurious "in use" is the correct
     # call, not a data-loss risk.
     # check=False: dismount is called from a `finally`, and we don't want a
-    # failure here (e.g. "not mounted") to mask the real error being handled.
-    await _run(
+    # failure here (e.g. "not mounted") to raise and mask the real error
+    # being handled — the caller inspects the returned code instead.
+    code, _output = await _run(
         "veracrypt", "-t", "--non-interactive", "--force", "-u", mountpoint,
         check=False,
     )
+    return code
 
 
 async def create_container(container: str, size_mb: int, password: str) -> None:
@@ -271,7 +281,13 @@ async def run_backup(
         log("Backup complete.")
     finally:
         log("Dismounting vault…")
-        await dismount(cfg.mountpoint)
+        code = await dismount(cfg.mountpoint)
+        if code != 0:
+            log(
+                f"WARNING: dismount failed (veracrypt exit {code}) — the vault "
+                f"may still be mounted and decrypted at {cfg.mountpoint}. "
+                f"Dismount it manually: veracrypt -t --force -u {cfg.mountpoint}"
+            )
 
 
 # ── one-time setup CLI: `python -m superguardian.vault init` ───────────────────

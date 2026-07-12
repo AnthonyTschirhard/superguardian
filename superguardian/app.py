@@ -922,11 +922,19 @@ class SuperGuardianApp(App):
             return
 
         log.write("\n[bold]── Vault Backup ──[/bold]")
+
+        def on_vault_log(line: str) -> None:
+            if line.startswith("WARNING"):
+                # A failed dismount means the vault may still be sitting
+                # mounted and decrypted — too important to leave as just
+                # another dim scrollback line the user might miss.
+                log.write(f"[bold red]{line}[/bold red]")
+                self.notify(line, severity="error", timeout=15)
+            else:
+                log.write(f"[dim]{line}[/dim]")
+
         try:
-            await vault.run_backup(
-                vcfg, password,
-                log=lambda line: log.write(f"[dim]{line}[/dim]"),
-            )
+            await vault.run_backup(vcfg, password, log=on_vault_log)
             log.write("[green]Vault backup complete.[/green]")
             self.notify("Vault backup complete.")
             self._pending_counts.pop("part1", None)
