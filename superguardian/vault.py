@@ -75,18 +75,32 @@ async def create_container(container: str, size_mb: int, password: str) -> None:
     """
     One-time setup: creates a new VeraCrypt file container. Does not mount
     it or git-init it — call mount() then git_init() separately afterward.
+
+    Formatting the container's filesystem needs root (loop-device/mkfs
+    access), so only this one subprocess call is escalated via `sudo` —
+    the calling Python process itself stays as the invoking user. Running
+    the whole process under `sudo` instead would change $HOME and make
+    config.load() resolve root's config, not the real user's (this is not
+    hypothetical: that's exactly what happened the first time this was
+    tried, silently creating the container under /home/root/). `sudo`
+    prompts on the controlling terminal (/dev/tty), separately from the
+    piped stdin used for the volume password, so this works fine
+    interactively despite stdin being redirected.
     """
     if Path(container).exists():
         raise VaultError(f"{container} already exists — refusing to overwrite.")
     os.makedirs(os.path.dirname(container) or ".", exist_ok=True)
     await _run(
-        "veracrypt", "-t", "-c", container,
+        "sudo", "veracrypt", "-t", "-c", container,
         "--encryption=AES", "--hash=sha-512", "--filesystem=Ext4",
         "--volume-type=normal", f"--size={size_mb}M",
         "--non-interactive", "--stdin", "--pim=0", "--keyfiles=",
         "--random-source=/dev/urandom",
         stdin_data=password,
     )
+    # `sudo veracrypt` created the file as root — hand it back to whoever
+    # is running this script.
+    await _run("sudo", "chown", f"{os.getuid()}:{os.getgid()}", container)
 
 
 async def git_init(mountpoint: str) -> None:

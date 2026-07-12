@@ -202,10 +202,11 @@ The VeraCrypt password is prompted every time and is never written to disk. It's
    ```
    It prompts for app type (enter `auth`), export directory (the path above), your Ente email, and password — see `ente account list` afterward to confirm it took.
 3. Fill in the `vault:` block in `config.yaml` (see the example above).
-4. Create the container and initialize the git repo inside it — run once:
+4. Create the container and initialize the git repo inside it — run once, **without** `sudo`:
    ```bash
    .venv/bin/python -m superguardian.vault init
    ```
+   Formatting the container needs root (loop-device/`mkfs` access), so it'll prompt for your `sudo` password partway through — that's expected. Do **not** run the whole command with `sudo` in front, though: that changes `$HOME` and makes it silently read/create the wrong user's config, putting the container in the wrong place.
 5. Add a `laptop_to_save_a_files` entry so the container file rides your normal sync.
 6. Make sure the Ente Auth account login (email/password) is saved in Firefox's own password manager, so the backup flow can pull the Ente password from the decrypted Firefox export instead of prompting separately. **Check the actual domain** it's saved under (open Firefox's `about:logins`, or grep a test `firefox_decrypt` export) — Ente's product domain isn't guaranteed to be `ente.io` for every account; set `vault.ente_login_match` to whatever substring is actually in the saved URL.
 

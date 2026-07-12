@@ -10,6 +10,7 @@ import pytest
 from superguardian.vault import (
     VaultConfig,
     VaultError,
+    create_container,
     find_ente_password,
     mount,
     run_backup,
@@ -117,6 +118,38 @@ def test_mount_passes_password_via_stdin_not_argv(tmp_path):
 
     assert "super-secret-pw" not in captured_args
     assert b"super-secret-pw" in fake.stdin.written
+
+
+def test_create_container_runs_veracrypt_via_sudo_not_whole_process(tmp_path):
+    # Regression test: create_container() must escalate only the veracrypt
+    # subprocess call via sudo, never the whole Python process — running
+    # the whole process under `sudo` changes $HOME and makes config.load()
+    # silently resolve root's config instead of the real user's (this is
+    # not hypothetical, it's exactly what happened the first time this was
+    # run: the container landed at /home/root/vault.hc).
+    fake = _FakeProc()
+    captured_calls: list[list[str]] = []
+
+    async def fake_create(*args, **kwargs):
+        captured_calls.append(list(args))
+        return fake
+
+    container = str(tmp_path / "vault.hc")
+    with patch("superguardian.vault.asyncio.create_subprocess_exec", fake_create):
+        _run(create_container(container, 100, "vault-pw"))
+
+    assert len(captured_calls) == 2  # veracrypt create, then chown
+    assert captured_calls[0][:2] == ["sudo", "veracrypt"]
+    assert captured_calls[1][0] == "sudo"
+    assert captured_calls[1][1] == "chown"
+    assert "vault-pw" not in [arg for call in captured_calls for arg in call]
+
+
+def test_create_container_refuses_to_overwrite_existing(tmp_path):
+    container = tmp_path / "vault.hc"
+    container.write_bytes(b"already here")
+    with pytest.raises(VaultError, match="already exists"):
+        _run(create_container(str(container), 100, "vault-pw"))
 
 
 # ── run_backup(): dismount must always happen ────────────────────────────────
