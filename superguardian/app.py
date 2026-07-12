@@ -30,7 +30,7 @@ from textual.widgets import (
     Static,
 )
 
-from . import config, history, mdisc, sync
+from . import config, history, mdisc, sync, vault
 from .config import is_mounted
 
 # ── constants ─────────────────────────────────────────────────────────────────
@@ -133,6 +133,18 @@ BurnModal { align: center middle; }
     height: auto;
 }
 #burn-buttons { layout: horizontal; height: 3; align: center middle; margin-top: 1; }
+
+VaultPasswordModal { align: center middle; }
+#vault-box {
+    background: $surface;
+    border: round $primary;
+    padding: 1 3;
+    width: 56;
+    height: auto;
+}
+#vault-buttons { layout: horizontal; height: 3; align: center middle; margin-top: 1; }
+
+#p1-vault-row { height: 3; margin-top: 1; }
 """
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -225,6 +237,35 @@ class BurnModal(ModalScreen[str | None]):
             self.dismiss(label if label else None)
         else:
             self.dismiss(None)
+
+
+class VaultPasswordModal(ModalScreen[str | None]):
+    """Ask for the VeraCrypt password before mounting the vault. Never stored."""
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="vault-box"):
+            yield Label("[bold]Vault Backup[/bold]")
+            yield Label("\nVeraCrypt password (asked every time, never stored):")
+            yield Input(password=True, id="vault-password-input")
+            with Horizontal(id="vault-buttons"):
+                yield Button("Mount && Backup", variant="primary", id="btn-confirm")
+                yield Button("Cancel", variant="default", id="btn-cancel")
+
+    def on_mount(self) -> None:
+        self.query_one("#vault-password-input", Input).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self._confirm()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn-confirm":
+            self._confirm()
+        else:
+            self.dismiss(None)
+
+    def _confirm(self) -> None:
+        pw = self.query_one("#vault-password-input", Input).value
+        self.dismiss(pw if pw else None)
 
 
 # ── operations panel (left) ───────────────────────────────────────────────────
@@ -328,6 +369,10 @@ class Part1View(SyncDetailView):
         yield Static("[dim]—[/dim]", id="p1-summary")
         yield Label("MAPPINGS", classes="section-hdr")
         yield Static("", id="p1-mappings")
+        yield Label("FILES", classes="section-hdr")
+        yield Static("", id="p1-files")
+        with Horizontal(id="p1-vault-row"):
+            yield Button("Backup Vault (v)", id="btn-vault-backup")
         yield Label("LOG", classes="section-hdr")
         yield RichLog(id="p1-log", highlight=True, markup=True)
 
@@ -353,6 +398,16 @@ class Part1View(SyncDetailView):
         else:
             lines = "  [yellow]No mappings configured — edit ~/.config/superguardian/config.yaml[/yellow]"
         self.query_one("#p1-mappings", Static).update(lines)
+
+        files = cfg.get("laptop_to_save_a_files") or []
+        if files:
+            file_lines = "\n".join(
+                f"  [dim]{f['from']}[/dim]  →  [dim]{f['to']}[/dim]"
+                for f in files
+            )
+        else:
+            file_lines = "  [dim]None configured[/dim]"
+        self.query_one("#p1-files", Static).update(file_lines)
 
     @property
     def log(self) -> RichLog:
@@ -498,6 +553,7 @@ class SuperGuardianApp(App):
         Binding("s", "sync_op", "Sync"),
         Binding("r", "refresh", "Refresh"),
         Binding("m", "mark_burned", "Mark burned"),
+        Binding("v", "vault_backup", "Vault backup"),
         Binding("R", "reload_config", "Reload config"),
         Binding("j,down", "cursor_down", "Down", show=False),
         Binding("k,up", "cursor_up", "Up", show=False),
@@ -610,13 +666,18 @@ class SuperGuardianApp(App):
         log.clear()
 
         pairs = self._get_sync_pairs(op)
-        if not pairs:
+        file_pairs = self._get_file_pairs(op)
+        if not pairs and not file_pairs:
             log.write("[yellow]No mappings configured for this operation.[/yellow]")
             return
 
         for src, _dst, _excl in pairs:
             if not Path(src).exists():
                 log.write(f"[red]Source not found: {src}[/red]")
+                return
+        for src, _dst in file_pairs:
+            if not Path(src).is_file():
+                log.write(f"[red]Source file not found: {src}[/red]")
                 return
 
         # Safety: reject destinations that are too shallow below their disc root.
@@ -704,6 +765,19 @@ class SuperGuardianApp(App):
                 status = "error"
                 break
 
+        if status == "success":
+            for src, dst in self._get_file_pairs(op):
+                log.write(f"\n[bold]{'─' * 40}[/bold]")
+                log.write(f"[bold]{src}[/bold]  →  [bold]{dst}[/bold]")
+                try:
+                    file_log = await sync.run_rsync_file(src, dst)
+                    log.write(file_log)
+                    total_files += 1
+                except RuntimeError as exc:
+                    log.write(f"[red]ERROR: {exc}[/red]")
+                    status = "error"
+                    break
+
         history.finish_run(
             run_id,
             status=status,
@@ -737,12 +811,15 @@ class SuperGuardianApp(App):
 
     async def _scan_op(self, op: str) -> None:
         pairs = self._get_sync_pairs(op)
-        if not pairs:
+        file_pairs = self._get_file_pairs(op)
+        if not pairs and not file_pairs:
             return
 
         all_accessible = all(
             Path(src).exists() and Path(dst).exists()
             for src, dst, _ in pairs
+        ) and all(
+            self._file_pair_accessible(src) for src, _dst in file_pairs
         )
         if not all_accessible:
             self._set_pending(op, _SCAN_UNAVAIL)
@@ -756,6 +833,8 @@ class SuperGuardianApp(App):
                 to_add += part.to_add
                 to_move += part.to_move
                 to_delete += part.to_delete
+            for src, dst in file_pairs:
+                to_add += await sync.count_pending_file(src, dst)
             summary = sync.DryRunSummary(to_add=to_add, to_move=to_move, to_delete=to_delete)
             self._dry_run_summaries[op] = summary
             self._set_pending(op, to_add)
@@ -817,6 +896,48 @@ class SuperGuardianApp(App):
         view.refresh_view(self._cfg)
         self.notify(f"Marked {len(files)} file(s) as burned to {label}.")
 
+    # ── vault backup ──────────────────────────────────────────────────────────
+
+    def action_vault_backup(self) -> None:
+        if self.current_op != "part1":
+            self.notify("Vault backup is only available from Primary Save.", severity="warning")
+            return
+        self._start_vault_backup()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn-vault-backup":
+            self.action_vault_backup()
+
+    @work(exclusive=True, group="vault")
+    async def _start_vault_backup(self) -> None:
+        log = self._get_log("part1")
+        try:
+            vcfg = vault.VaultConfig.from_dict(self._cfg)
+        except vault.VaultError as exc:
+            self.notify(str(exc), severity="error")
+            return
+
+        password = await self.push_screen_wait(VaultPasswordModal())
+        if not password:
+            return
+
+        log.write("\n[bold]── Vault Backup ──[/bold]")
+        try:
+            await vault.run_backup(
+                vcfg, password,
+                log=lambda line: log.write(f"[dim]{line}[/dim]"),
+            )
+            log.write("[green]Vault backup complete.[/green]")
+            self.notify("Vault backup complete.")
+            self._pending_counts.pop("part1", None)
+            self._dry_run_summaries.pop("part1", None)
+            self._scan_all_ops(ops=["part1"])
+        except vault.VaultError as exc:
+            log.write(f"[red]Vault backup failed: {exc}[/red]")
+            self.notify("Vault backup failed — see log.", severity="error")
+        finally:
+            password = ""  # best-effort clear; original Input value may still be referenced
+
     # ── helpers ───────────────────────────────────────────────────────────────
 
     def _get_sync_pairs(self, op: str) -> list[tuple[str, str, list[str]]]:
@@ -831,6 +952,20 @@ class SuperGuardianApp(App):
         if op == "part2_ac":
             return [(config.disc_path(cfg, "SAVE_A"), config.disc_path(cfg, "SAVE_C"), [])]
         return []
+
+    def _get_file_pairs(self, op: str) -> list[tuple[str, str]]:
+        """Individual-file mappings (as opposed to folders) — part1 only."""
+        if op != "part1":
+            return []
+        return [
+            (f["from"], f["to"])
+            for f in (self._cfg.get("laptop_to_save_a_files") or [])
+        ]
+
+    def _file_pair_accessible(self, src: str) -> bool:
+        # Destination file may not exist yet on the first-ever backup — what
+        # matters is whether the source file and the SAVE_A disc are there.
+        return Path(src).is_file() and is_mounted(config.disc_path(self._cfg, "SAVE_A"))
 
     def _get_log(self, op: str) -> RichLog:
         if op == "part1":

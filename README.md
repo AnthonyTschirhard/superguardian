@@ -40,6 +40,8 @@ rsync --version
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
+Optional, only needed for the [password/OTP vault backup](#passwordotp-vault-backup-optional): `veracrypt`, `git`, the `ente` CLI, and `firefox_decrypt`.
+
 ---
 
 ## Installation
@@ -105,6 +107,21 @@ laptop_to_save_a:
 mdisc_tracked:
   - /run/media/youruser/SAVE_A/Photos
   - /run/media/youruser/SAVE_A/ImportantDocs
+
+# Primary Save — individual files (as opposed to whole folders) to sync
+# laptop → SAVE_A. Used for things like the vault container below.
+laptop_to_save_a_files:
+  - from: /home/youruser/vault.hc
+    to:   /run/media/youruser/SAVE_A/YOURUSER/PERSO/vault.hc
+
+# Password/OTP vault backup — see "Password/OTP vault backup" section below.
+vault:
+  container: /home/youruser/vault.hc
+  mountpoint: /run/user/1000/superguardian-vault   # tmpfs — check `id -u`
+  size_mb: 100
+  firefox_profile: /home/youruser/.mozilla/firefox/xxxxxxxx.default-release
+  firefox_decrypt_path: /home/youruser/tools/firefox_decrypt/firefox_decrypt.py
+  ente_login_match: ente.io
 ```
 
 Press `R` inside the app to reload the config without restarting.
@@ -129,6 +146,7 @@ Super Guardian refuses to sync into a directory that is fewer than 2 levels belo
 | `r` | Refresh all views (re-reads disc mounts and last sync times) |
 | `R` | Reload config from disk |
 | `m` | Mark M-DISC files as burned (M-DISC tab only) |
+| `v` | Back up the password/OTP vault (Primary Save tab only) |
 | `q` | Quit |
 
 ---
@@ -153,6 +171,44 @@ The M-DISC tab lists every file under your `mdisc_tracked` directories that has 
 - Press `m` to open the burn dialog and enter a disc label (e.g. `MDISC-2024-01`).
 - All currently listed files are marked as burned to that label in the local database (`~/.config/superguardian/history.db`).
 - If a file is later modified its mtime changes and it reappears as **modified** in the pending list.
+
+---
+
+## Password/OTP vault backup (optional)
+
+Pressing `v` from the Primary Save tab mounts a VeraCrypt-encrypted container, exports your Firefox-saved passwords and Ente Auth OTP secrets into a local git repo inside it, commits, and dismounts — all in one step. The container is a regular file, so it rides your normal Primary Save sync (via a `laptop_to_save_a_files` entry) like anything else; the git repo inside it is **never synced online** on its own.
+
+The VeraCrypt password is prompted every time and is never written to disk. It's fed to `veracrypt` via stdin, never as a command-line argument, so it's never visible to other processes on the machine.
+
+### One-time setup
+
+1. Install prerequisites:
+   ```bash
+   # VeraCrypt — official .deb from https://veracrypt.io/en/Downloads.html (no apt package)
+   sudo apt install ./veracrypt-<version>-<ubuntu-release>-amd64.deb
+
+   # ente CLI — static binary from https://github.com/ente/ente/releases (search "cli-")
+   curl -L -o ente-cli.tar.gz <release-tarball-url-for-your-arch>
+   tar xzf ente-cli.tar.gz -C ~/.local/bin ente
+   chmod +x ~/.local/bin/ente
+
+   # firefox_decrypt — https://github.com/unode/firefox_decrypt (run from a git checkout, not pip)
+   git clone https://github.com/unode/firefox_decrypt ~/tools/firefox_decrypt
+   ```
+2. Log in to the `ente` CLI once, interactively: `ente account add`, then point it at an export directory for the `auth` app: `ente account update --app auth --email you@example.com --dir ~/.config/ente-cli-export`.
+3. Fill in the `vault:` block in `config.yaml` (see the example above).
+4. Create the container and initialize the git repo inside it — run once:
+   ```bash
+   .venv/bin/python -m superguardian.vault init
+   ```
+5. Add a `laptop_to_save_a_files` entry so the container file rides your normal sync.
+6. Make sure the Ente Auth account login (email/password) is saved in Firefox's own password manager — the backup flow automatically pulls the Ente password from the freshly-decrypted Firefox export instead of prompting for it separately, so this step is what makes that possible.
+
+### Security notes
+
+- Firefox must be closed when you press `v` — its NSS database (`key4.db`) is locked while Firefox holds the profile open.
+- `ente auth decrypt` only accepts its password via a `-p` flag (no stdin form exists), so it's briefly visible via `ps`/`/proc/<pid>/cmdline` to other local users during that step — a low-severity, accepted tradeoff on a single-user machine.
+- If any step fails partway through, the vault is still dismounted (`try`/`finally`) — it's never left mounted after a failed run.
 
 ---
 

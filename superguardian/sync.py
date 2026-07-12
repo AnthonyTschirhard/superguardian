@@ -106,6 +106,44 @@ async def count_pending(
     )
 
 
+async def count_pending_file(source: str, destination: str) -> int:
+    """
+    Returns 1 if the single file at *source* differs from *destination* (or
+    destination doesn't exist yet), 0 otherwise. Companion to count_pending()
+    for laptop_to_save_a_files entries — source/destination are exact file
+    paths, not directories, so no trailing-slash folder semantics apply.
+    """
+    cmd = ["rsync", "-a", "--dry-run", "--itemize-changes", source, destination]
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, _ = await proc.communicate()
+    return 1 if stdout.decode(errors="replace").strip() else 0
+
+
+async def run_rsync_file(source: str, destination: str) -> str:
+    """
+    Copies a single file source -> destination, creating parent directories
+    as needed. Returns the rsync log. Raises RuntimeError on failure.
+    Companion to run_rsync() for laptop_to_save_a_files entries — no
+    --delete, since deletion-risk detection doesn't apply to a single
+    explicitly-named file (there's no directory tree to prune).
+    """
+    os.makedirs(os.path.dirname(destination), exist_ok=True)
+    proc = await asyncio.create_subprocess_exec(
+        "rsync", "-a", "--stats", source, destination,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    stdout, _ = await proc.communicate()
+    log = stdout.decode(errors="replace")
+    if proc.returncode != 0:
+        raise RuntimeError(f"rsync exited with code {proc.returncode}")
+    return log
+
+
 async def run_rsync(
     source: str,
     destination: str,

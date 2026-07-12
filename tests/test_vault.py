@@ -1,0 +1,172 @@
+"""Tests for vault.py: CSV parsing, config validation, secret handling, and the
+mount/export/commit/dismount orchestration (dismount must always run)."""
+from __future__ import annotations
+
+import asyncio
+from unittest.mock import AsyncMock, patch
+
+import pytest
+
+from superguardian.vault import (
+    VaultConfig,
+    VaultError,
+    find_ente_password,
+    mount,
+    run_backup,
+)
+
+
+def _run(coro):
+    return asyncio.run(coro)
+
+
+# ── find_ente_password ──────────────────────────────────────────────────────
+
+def test_find_ente_password_matches_url(tmp_path):
+    csv_file = tmp_path / "firefox.csv"
+    csv_file.write_text(
+        "url,username,password\n"
+        "https://github.com,me,ghpass\n"
+        "https://auth.ente.io,me@example.com,entepass\n"
+    )
+    assert find_ente_password(str(csv_file), "ente.io") == "entepass"
+
+
+def test_find_ente_password_no_match_raises(tmp_path):
+    csv_file = tmp_path / "firefox.csv"
+    csv_file.write_text("url,username,password\nhttps://github.com,me,ghpass\n")
+    with pytest.raises(VaultError, match="No Firefox-saved login"):
+        find_ente_password(str(csv_file), "ente.io")
+
+
+def test_find_ente_password_alt_column_names(tmp_path):
+    # firefox_decrypt's column names aren't fully pinned down yet — support
+    # both the Firefox-native export schema and firefox_decrypt's own.
+    csv_file = tmp_path / "firefox.csv"
+    csv_file.write_text(
+        "login_uri,login_user,login_password\n"
+        "https://auth.ente.io,me,entepass\n"
+    )
+    assert find_ente_password(str(csv_file), "ente.io") == "entepass"
+
+
+# ── VaultConfig.from_dict ────────────────────────────────────────────────────
+
+def test_vault_config_from_dict_ok():
+    cfg = {
+        "vault": {
+            "container": "/home/u/vault.hc",
+            "mountpoint": "/run/user/1000/sg-vault",
+            "firefox_profile": "/home/u/.mozilla/firefox/x.default",
+            "firefox_decrypt_path": "/home/u/tools/firefox_decrypt.py",
+            "ente_login_match": "ente.io",
+        }
+    }
+    vcfg = VaultConfig.from_dict(cfg)
+    assert vcfg.container == "/home/u/vault.hc"
+    assert vcfg.ente_export_dir  # defaulted, not required in config
+
+
+def test_vault_config_from_dict_missing_key_raises():
+    cfg = {"vault": {"container": "/home/u/vault.hc"}}
+    with pytest.raises(VaultError, match="Missing vault config key"):
+        VaultConfig.from_dict(cfg)
+
+
+def test_vault_config_from_dict_no_vault_block_raises():
+    with pytest.raises(VaultError, match="Missing vault config key"):
+        VaultConfig.from_dict({})
+
+
+# ── mount(): password must go via stdin, never argv ──────────────────────────
+
+class _FakeStdin:
+    def __init__(self):
+        self.written = b""
+
+    def write(self, data: bytes) -> None:
+        self.written += data
+
+    async def drain(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+
+class _FakeProc:
+    def __init__(self, returncode: int = 0):
+        self.stdin = _FakeStdin()
+        self.returncode = returncode
+
+    async def communicate(self):
+        return b"", b""
+
+
+def test_mount_passes_password_via_stdin_not_argv(tmp_path):
+    fake = _FakeProc()
+    captured_args: list[str] = []
+
+    async def fake_create(*args, **kwargs):
+        captured_args.extend(args)
+        return fake
+
+    mountpoint = str(tmp_path / "mnt")
+    with patch("superguardian.vault.asyncio.create_subprocess_exec", fake_create):
+        _run(mount("/home/u/vault.hc", mountpoint, "super-secret-pw"))
+
+    assert "super-secret-pw" not in captured_args
+    assert b"super-secret-pw" in fake.stdin.written
+
+
+# ── run_backup(): dismount must always happen ────────────────────────────────
+
+def _vcfg() -> VaultConfig:
+    return VaultConfig(
+        container="/home/u/vault.hc",
+        mountpoint="/run/user/1000/sg-vault",
+        firefox_profile="/home/u/.mozilla/firefox/x.default",
+        firefox_decrypt_path="/home/u/tools/firefox_decrypt.py",
+        ente_login_match="ente.io",
+        ente_export_dir="/home/u/.config/ente-cli-export",
+    )
+
+
+def test_run_backup_dismounts_on_success():
+    with (
+        patch("superguardian.vault.mount", AsyncMock()) as m_mount,
+        patch("superguardian.vault.export_firefox", AsyncMock()),
+        patch("superguardian.vault.find_ente_password", return_value="ente-pw"),
+        patch("superguardian.vault.export_ente_otp", AsyncMock()),
+        patch("superguardian.vault.git_commit", AsyncMock()),
+        patch("superguardian.vault.dismount", AsyncMock()) as m_dismount,
+    ):
+        _run(run_backup(_vcfg(), "veracrypt-pw"))
+    m_mount.assert_awaited_once()
+    m_dismount.assert_awaited_once()
+
+
+def test_run_backup_dismounts_even_when_firefox_export_fails():
+    with (
+        patch("superguardian.vault.mount", AsyncMock()),
+        patch("superguardian.vault.export_firefox", AsyncMock(side_effect=VaultError("boom"))),
+        patch("superguardian.vault.dismount", AsyncMock()) as m_dismount,
+    ):
+        with pytest.raises(VaultError, match="boom"):
+            _run(run_backup(_vcfg(), "veracrypt-pw"))
+    m_dismount.assert_awaited_once()
+
+
+def test_run_backup_dismounts_even_when_ente_export_fails():
+    with (
+        patch("superguardian.vault.mount", AsyncMock()),
+        patch("superguardian.vault.export_firefox", AsyncMock()),
+        patch("superguardian.vault.find_ente_password", return_value="ente-pw"),
+        patch("superguardian.vault.export_ente_otp", AsyncMock(side_effect=VaultError("boom"))),
+        patch("superguardian.vault.git_commit", AsyncMock()) as m_commit,
+        patch("superguardian.vault.dismount", AsyncMock()) as m_dismount,
+    ):
+        with pytest.raises(VaultError, match="boom"):
+            _run(run_backup(_vcfg(), "veracrypt-pw"))
+    m_commit.assert_not_awaited()  # must not commit a partial/failed backup
+    m_dismount.assert_awaited_once()
