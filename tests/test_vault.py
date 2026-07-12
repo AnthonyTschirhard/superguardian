@@ -121,6 +121,55 @@ def test_mount_passes_password_via_stdin_not_argv(tmp_path):
     assert b"super-secret-pw" in fake.stdin.written
 
 
+def test_mount_plain_sudo_when_no_sudo_password_given(tmp_path):
+    # sudo_password=None is the vault-init-CLI path: run interactively in a
+    # real terminal, so plain `sudo` (no -S) lets it prompt on /dev/tty
+    # normally rather than needing a piped password.
+    fake = _FakeProc()
+    captured_args: list[str] = []
+
+    async def fake_create(*args, **kwargs):
+        captured_args.extend(args)
+        return fake
+
+    mountpoint = str(tmp_path / "mnt")
+    with patch("superguardian.vault.asyncio.create_subprocess_exec", fake_create):
+        _run(mount("/home/u/vault.hc", mountpoint, "vault-pw"))
+
+    assert captured_args[:2] == ["sudo", "veracrypt"]
+    assert "-S" not in captured_args
+
+
+def test_mount_chains_sudo_password_then_vault_password_via_stdin(tmp_path):
+    # Regression test: on Linux, veracrypt always needs root for mount (it
+    # writes into system mount infra) and refuses to self-escalate under
+    # --non-interactive — confirmed live ("Failed to obtain administrator
+    # privileges"). The TUI has no controlling terminal for `sudo` to prompt
+    # on, so it must drive `sudo -S`, which consumes exactly the first
+    # stdin line for its own password before veracrypt's own --stdin reads
+    # the rest for the vault password. Both must go via stdin, never argv.
+    fake = _FakeProc()
+    captured_args: list[str] = []
+
+    async def fake_create(*args, **kwargs):
+        captured_args.extend(args)
+        return fake
+
+    mountpoint = str(tmp_path / "mnt")
+    with patch("superguardian.vault.asyncio.create_subprocess_exec", fake_create):
+        _run(mount(
+            "/home/u/vault.hc", mountpoint, "vault-pw", sudo_password="sudo-pw",
+        ))
+
+    assert captured_args[:3] == ["sudo", "-S", "veracrypt"]
+    assert "vault-pw" not in captured_args
+    assert "sudo-pw" not in captured_args
+    written = fake.stdin.written.decode()
+    lines = written.splitlines()
+    assert lines[0] == "sudo-pw"  # sudo -S reads this line first
+    assert lines[1] == "vault-pw"  # then veracrypt --stdin reads this one
+
+
 def test_create_container_runs_veracrypt_via_sudo_not_whole_process(tmp_path):
     # Regression test: create_container() must escalate only the veracrypt
     # subprocess call via sudo, never the whole Python process — running
@@ -173,6 +222,22 @@ def test_dismount_forces_and_never_prompts_interactively():
     assert "--force" in captured_args or "-f" in captured_args
 
 
+def test_dismount_chains_sudo_password_via_stdin():
+    fake = _FakeProc()
+    captured_args: list[str] = []
+
+    async def fake_create(*args, **kwargs):
+        captured_args.extend(args)
+        return fake
+
+    with patch("superguardian.vault.asyncio.create_subprocess_exec", fake_create):
+        _run(dismount("/run/user/1000/superguardian-vault", sudo_password="sudo-pw"))
+
+    assert captured_args[:3] == ["sudo", "-S", "veracrypt"]
+    assert "sudo-pw" not in captured_args
+    assert fake.stdin.written.decode().strip() == "sudo-pw"
+
+
 # ── run_backup(): dismount must always happen ────────────────────────────────
 
 def _vcfg() -> VaultConfig:
@@ -195,7 +260,7 @@ def test_run_backup_dismounts_on_success():
         patch("superguardian.vault.git_commit", AsyncMock()),
         patch("superguardian.vault.dismount", AsyncMock(return_value=0)) as m_dismount,
     ):
-        _run(run_backup(_vcfg(), "veracrypt-pw"))
+        _run(run_backup(_vcfg(), "veracrypt-pw", "sudo-pw"))
     m_mount.assert_awaited_once()
     m_dismount.assert_awaited_once()
 
@@ -207,7 +272,7 @@ def test_run_backup_dismounts_even_when_firefox_export_fails():
         patch("superguardian.vault.dismount", AsyncMock(return_value=0)) as m_dismount,
     ):
         with pytest.raises(VaultError, match="boom"):
-            _run(run_backup(_vcfg(), "veracrypt-pw"))
+            _run(run_backup(_vcfg(), "veracrypt-pw", "sudo-pw"))
     m_dismount.assert_awaited_once()
 
 
@@ -221,7 +286,7 @@ def test_run_backup_dismounts_even_when_ente_export_fails():
         patch("superguardian.vault.dismount", AsyncMock(return_value=0)) as m_dismount,
     ):
         with pytest.raises(VaultError, match="boom"):
-            _run(run_backup(_vcfg(), "veracrypt-pw"))
+            _run(run_backup(_vcfg(), "veracrypt-pw", "sudo-pw"))
     m_commit.assert_not_awaited()  # must not commit a partial/failed backup
     m_dismount.assert_awaited_once()
 
@@ -240,5 +305,5 @@ def test_run_backup_warns_loudly_when_dismount_itself_fails():
         patch("superguardian.vault.git_commit", AsyncMock()),
         patch("superguardian.vault.dismount", AsyncMock(return_value=1)),
     ):
-        _run(run_backup(_vcfg(), "veracrypt-pw", log=logged.append))
+        _run(run_backup(_vcfg(), "veracrypt-pw", "sudo-pw", log=logged.append))
     assert any("WARNING" in line and "still be mounted" in line for line in logged)

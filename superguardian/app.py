@@ -240,15 +240,22 @@ class BurnModal(ModalScreen[str | None]):
 
 
 class VaultPasswordModal(ModalScreen[str | None]):
-    """Ask for the VeraCrypt password before mounting the vault. Never stored."""
+    """Ask for a password before a vault step. Never stored. Reused for both
+    the VeraCrypt vault password and the sudo password veracrypt itself
+    needs on Linux for mount/dismount — see vault.mount()'s docstring."""
+
+    def __init__(self, prompt: str, *, confirm_label: str = "Confirm", **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._prompt = prompt
+        self._confirm_label = confirm_label
 
     def compose(self) -> ComposeResult:
         with Vertical(id="vault-box"):
             yield Label("[bold]Vault Backup[/bold]")
-            yield Label("\nVeraCrypt password (asked every time, never stored):")
+            yield Label(f"\n{self._prompt} (asked every time, never stored):")
             yield Input(password=True, id="vault-password-input")
             with Horizontal(id="vault-buttons"):
-                yield Button("Mount && Backup", variant="primary", id="btn-confirm")
+                yield Button(self._confirm_label, variant="primary", id="btn-confirm")
                 yield Button("Cancel", variant="default", id="btn-cancel")
 
     def on_mount(self) -> None:
@@ -917,8 +924,21 @@ class SuperGuardianApp(App):
             self.notify(str(exc), severity="error")
             return
 
-        password = await self.push_screen_wait(VaultPasswordModal())
+        password = await self.push_screen_wait(
+            VaultPasswordModal("VeraCrypt vault password", confirm_label="Next")
+        )
         if not password:
+            return
+
+        # veracrypt itself needs root for mount/dismount on Linux (it
+        # writes into system mount infrastructure) and can only
+        # self-escalate via sudo interactively — there's no controlling
+        # terminal here for it to prompt on, so we collect it ourselves.
+        # See vault.mount()'s docstring for the full explanation.
+        sudo_password = await self.push_screen_wait(
+            VaultPasswordModal("sudo password (for veracrypt mount/dismount)", confirm_label="Mount && Backup")
+        )
+        if not sudo_password:
             return
 
         log.write("\n[bold]── Vault Backup ──[/bold]")
@@ -934,7 +954,7 @@ class SuperGuardianApp(App):
                 log.write(f"[dim]{line}[/dim]")
 
         try:
-            await vault.run_backup(vcfg, password, log=on_vault_log)
+            await vault.run_backup(vcfg, password, sudo_password, log=on_vault_log)
             log.write("[green]Vault backup complete.[/green]")
             self.notify("Vault backup complete.")
             self._pending_counts.pop("part1", None)
@@ -945,6 +965,7 @@ class SuperGuardianApp(App):
             self.notify("Vault backup failed — see log.", severity="error")
         finally:
             password = ""  # best-effort clear; original Input value may still be referenced
+            sudo_password = ""
 
     # ── helpers ───────────────────────────────────────────────────────────────
 

@@ -180,6 +180,8 @@ Pressing `v` from the Primary Save tab mounts a VeraCrypt-encrypted container, e
 
 The VeraCrypt password is prompted every time and is never written to disk. It's fed to `veracrypt` via stdin, never as a command-line argument, so it's never visible to other processes on the machine.
 
+**You'll be prompted twice: your VeraCrypt vault password, then your `sudo` password.** On Linux, `veracrypt` always needs root to mount/dismount (it writes into system mount infrastructure) and can only self-escalate via its own internal `sudo` call when there's a real terminal to prompt on — the TUI has no controlling terminal, so it collects your sudo password itself and feeds it to `sudo -S`, which is chained through the same stdin pipe ahead of the vault password. Neither password is ever written to disk or passed as a command-line argument.
+
 ### One-time setup
 
 1. Install prerequisites:
@@ -214,7 +216,7 @@ The VeraCrypt password is prompted every time and is never written to disk. It's
 
 - Firefox must be closed when you press `v` — its NSS database (`key4.db`) is locked while Firefox holds the profile open.
 - `ente auth decrypt` only accepts its password via a `-p` flag (no stdin form exists), so it's briefly visible via `ps`/`/proc/<pid>/cmdline` to other local users during that step — a low-severity, accepted tradeoff on a single-user machine.
-- If any step fails partway through, the vault is still dismounted (`try`/`finally`) — it's never left mounted after a failed run.
+- If any step fails partway through, the vault is still dismounted (`try`/`finally`) — it's never left mounted after a failed run. If dismount *itself* fails (confirmed live: veracrypt can report "target is busy" even with `--force`, e.g. a process with its cwd inside the mountpoint), that's surfaced as a loud red warning + persistent error toast rather than silently reported as a normal success — check the log and dismount manually if you ever see one (`sudo veracrypt -t --force -u <mountpoint>`).
 
 ---
 

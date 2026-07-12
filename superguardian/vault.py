@@ -56,16 +56,38 @@ async def _run(
 
 # ── mount / dismount / create (create + git_init are one-time setup) ───────────
 
-async def mount(container: str, mountpoint: str, password: str) -> None:
+async def mount(
+    container: str, mountpoint: str, password: str, *, sudo_password: str | None = None,
+) -> None:
+    """
+    Mounting always needs root on Linux — VeraCrypt writes into system mount
+    infrastructure and normally self-escalates via its own internal `sudo`
+    call, but refuses to do that under --non-interactive (confirmed live:
+    "Failed to obtain administrator privileges"). So we drive `sudo`
+    ourselves.
+
+    sudo_password=None (the `vault init` CLI, run interactively in a real
+    terminal): plain `sudo`, which prompts on the terminal normally.
+    sudo_password set (the TUI, no controlling terminal to prompt on):
+    `sudo -S`, fed via the same stdin pipe as the vault password — sudo -S
+    consumes the first line for its own password, then the exec'd veracrypt
+    process reads the remaining line(s) via --stdin for the vault password.
+    """
     os.makedirs(mountpoint, exist_ok=True)
+    if sudo_password is not None:
+        prefix = ["sudo", "-S"]
+        stdin_data = f"{sudo_password}\n{password}"
+    else:
+        prefix = ["sudo"]
+        stdin_data = password
     await _run(
-        "veracrypt", "-t", "--non-interactive", "--stdin", "--pim=0",
+        *prefix, "veracrypt", "-t", "--non-interactive", "--stdin", "--pim=0",
         "--protect-hidden=no", container, mountpoint,
-        stdin_data=password,
+        stdin_data=stdin_data,
     )
 
 
-async def dismount(mountpoint: str) -> int:
+async def dismount(mountpoint: str, *, sudo_password: str | None = None) -> int:
     """
     Returns veracrypt's exit code so callers can detect a failed dismount
     instead of silently assuming it worked — e.g. "target is busy" (a
@@ -73,6 +95,9 @@ async def dismount(mountpoint: str) -> int:
     confirmed live, that --force does not always override. A caller that
     ignores a nonzero return here could report "backup complete" while the
     vault is still sitting mounted and decrypted.
+
+    Needs root for the same reason mount() does — see its docstring for the
+    sudo_password=None vs. set distinction.
     """
     # --force: without it, a volume VeraCrypt considers "in use" (e.g. a
     # desktop file indexer briefly touching the freshly-mounted directory)
@@ -86,8 +111,15 @@ async def dismount(mountpoint: str) -> int:
     # check=False: dismount is called from a `finally`, and we don't want a
     # failure here (e.g. "not mounted") to raise and mask the real error
     # being handled — the caller inspects the returned code instead.
+    if sudo_password is not None:
+        prefix = ["sudo", "-S"]
+        stdin_data: str | None = sudo_password
+    else:
+        prefix = ["sudo"]
+        stdin_data = None
     code, _output = await _run(
-        "veracrypt", "-t", "--non-interactive", "--force", "-u", mountpoint,
+        *prefix, "veracrypt", "-t", "--non-interactive", "--force", "-u", mountpoint,
+        stdin_data=stdin_data,
         check=False,
     )
     return code
@@ -252,6 +284,7 @@ class VaultConfig:
 async def run_backup(
     cfg: VaultConfig,
     veracrypt_password: str,
+    sudo_password: str,
     *,
     log: Callable[[str], None] = lambda line: None,
 ) -> None:
@@ -259,9 +292,13 @@ async def run_backup(
     Mounts the vault, exports Firefox passwords + Ente Auth OTP into it,
     commits, and always dismounts afterward — even on error, so a failure
     partway through can't leave the vault sitting decrypted.
+
+    sudo_password is required (not optional like in mount()/dismount()
+    directly) because the TUI has no controlling terminal for `sudo` to
+    prompt on — see mount()'s docstring for why root is needed at all.
     """
     log("Mounting vault…")
-    await mount(cfg.container, cfg.mountpoint, veracrypt_password)
+    await mount(cfg.container, cfg.mountpoint, veracrypt_password, sudo_password=sudo_password)
     try:
         firefox_csv = str(Path(cfg.mountpoint) / "passwords" / "firefox.csv")
         log("Exporting Firefox passwords…")
@@ -281,12 +318,12 @@ async def run_backup(
         log("Backup complete.")
     finally:
         log("Dismounting vault…")
-        code = await dismount(cfg.mountpoint)
+        code = await dismount(cfg.mountpoint, sudo_password=sudo_password)
         if code != 0:
             log(
                 f"WARNING: dismount failed (veracrypt exit {code}) — the vault "
                 f"may still be mounted and decrypted at {cfg.mountpoint}. "
-                f"Dismount it manually: veracrypt -t --force -u {cfg.mountpoint}"
+                f"Dismount it manually: sudo veracrypt -t --force -u {cfg.mountpoint}"
             )
 
 
