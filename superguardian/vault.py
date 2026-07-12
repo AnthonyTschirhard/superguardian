@@ -174,14 +174,34 @@ async def export_firefox(profile: str, decrypt_script: str, out_csv: str) -> Non
     Runs firefox_decrypt against *profile*, writing a CSV export to *out_csv*
     (expected to live inside the mounted vault).
 
-    Firefox must be closed: firefox_decrypt reads key4.db/logins.json
-    directly and NSS locks those files while Firefox holds the profile open.
+    firefox_decrypt opens key4.db with a plain sqlite3.connect(), which
+    SQLite generally allows even while Firefox holds it open (confirmed
+    live, repeatedly, with Firefox running) — there's a narrow race window
+    if Firefox happens to be mid-write at that exact instant, but it's not
+    a hard requirement to close it first.
+
+    Deliberately does NOT use the shared _run() helper: firefox_decrypt
+    always logs a WARNING line to stderr (e.g. "profile.ini not found"),
+    and _run() merges stderr into stdout for its callers that want a
+    combined log. Here stdout is meant to be pure, parseable CSV data —
+    merging the warning in front of it would make it the CSV header
+    instead of "url,user,password", silently breaking every row lookup
+    downstream. Confirmed live: this is exactly what caused
+    find_ente_password() to report no match despite the row being present.
     """
     os.makedirs(os.path.dirname(out_csv) or ".", exist_ok=True)
-    _, output = await _run(
+    proc = await asyncio.create_subprocess_exec(
         "python3", decrypt_script, "--format=csv", "--csv-delimiter=,", profile,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
     )
-    Path(out_csv).write_text(output)
+    stdout, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        raise VaultError(
+            f"firefox_decrypt exited with code {proc.returncode}:\n"
+            f"{stderr.decode(errors='replace')}"
+        )
+    Path(out_csv).write_text(stdout.decode(errors="replace"))
 
 
 # ── ente auth export ─────────────────────────────────────────────────────────

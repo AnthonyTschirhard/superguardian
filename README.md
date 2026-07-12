@@ -214,7 +214,7 @@ The VeraCrypt password is prompted every time and is never written to disk. It's
 
 ### Security notes
 
-- Firefox must be closed when you press `v` — its NSS database (`key4.db`) is locked while Firefox holds the profile open.
+- Firefox does **not** need to be closed — `firefox_decrypt` opens `key4.db` with a plain SQLite connection, which generally allows concurrent reads even while Firefox holds it open (confirmed live, repeatedly, with Firefox running). There's a narrow theoretical race if Firefox happens to be writing at that exact instant, but it's not a hard requirement.
 - `ente auth decrypt` only accepts its password via a `-p` flag (no stdin form exists), so it's briefly visible via `ps`/`/proc/<pid>/cmdline` to other local users during that step — a low-severity, accepted tradeoff on a single-user machine.
 - If any step fails partway through, the vault is still dismounted (`try`/`finally`) — it's never left mounted after a failed run. If dismount *itself* fails (confirmed live: veracrypt can report "target is busy" even with `--force`, e.g. a process with its cwd inside the mountpoint), that's surfaced as a loud red warning + persistent error toast rather than silently reported as a normal success — check the log and dismount manually if you ever see one (`sudo veracrypt -t --force -u <mountpoint>`).
 

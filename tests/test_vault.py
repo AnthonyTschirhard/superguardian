@@ -12,6 +12,7 @@ from superguardian.vault import (
     VaultError,
     create_container,
     dismount,
+    export_firefox,
     find_ente_password,
     mount,
     run_backup,
@@ -50,6 +51,53 @@ def test_find_ente_password_alt_column_names(tmp_path):
         "https://auth.ente.io,me,entepass\n"
     )
     assert find_ente_password(str(csv_file), "ente.io") == "entepass"
+
+
+# ── export_firefox(): stderr must never leak into the CSV data ──────────────
+
+class _FakeFirefoxDecryptProc:
+    def __init__(self, stdout: bytes, stderr: bytes, returncode: int = 0):
+        self._stdout = stdout
+        self._stderr = stderr
+        self.returncode = returncode
+
+    async def communicate(self):
+        return self._stdout, self._stderr
+
+
+def test_export_firefox_keeps_stderr_warnings_out_of_csv_data(tmp_path):
+    # Regression test: firefox_decrypt always logs a WARNING line to stderr
+    # (e.g. "profile.ini not found"). export_firefox() must not merge that
+    # into the CSV data — confirmed live, doing so makes the warning line
+    # csv.DictReader's header instead of "url,user,password", silently
+    # breaking every row lookup (find_ente_password never matches anything
+    # despite the real row being present in the export).
+    stdout = b'"url","user","password"\r\n"https://auth.ente.com","me","secret"\r\n'
+    stderr = b"2026-07-12 16:18:04,190 - WARNING - profile.ini not found\n"
+    fake = _FakeFirefoxDecryptProc(stdout, stderr)
+
+    async def fake_create(*args, **kwargs):
+        return fake
+
+    out_csv = str(tmp_path / "firefox.csv")
+    with patch("superguardian.vault.asyncio.create_subprocess_exec", fake_create):
+        _run(export_firefox("/profile", "/decrypt.py", out_csv))
+
+    written = open(out_csv).read()
+    assert "WARNING" not in written
+    assert written.startswith('"url","user","password"')
+    assert find_ente_password(out_csv, "ente.com") == "secret"
+
+
+def test_export_firefox_raises_with_stderr_on_failure(tmp_path):
+    fake = _FakeFirefoxDecryptProc(b"", b"some real error", returncode=1)
+
+    async def fake_create(*args, **kwargs):
+        return fake
+
+    with patch("superguardian.vault.asyncio.create_subprocess_exec", fake_create):
+        with pytest.raises(VaultError, match="some real error"):
+            _run(export_firefox("/profile", "/decrypt.py", str(tmp_path / "firefox.csv")))
 
 
 # ── VaultConfig.from_dict ────────────────────────────────────────────────────
