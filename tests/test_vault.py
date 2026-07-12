@@ -14,7 +14,6 @@ from superguardian.vault import (
     create_container,
     dismount,
     export_firefox,
-    find_ente_password,
     mount,
     run_backup,
 )
@@ -22,36 +21,6 @@ from superguardian.vault import (
 
 def _run(coro):
     return asyncio.run(coro)
-
-
-# ── find_ente_password ──────────────────────────────────────────────────────
-
-def test_find_ente_password_matches_url(tmp_path):
-    csv_file = tmp_path / "firefox.csv"
-    csv_file.write_text(
-        "url,username,password\n"
-        "https://github.com,me,ghpass\n"
-        "https://auth.ente.io,me@example.com,entepass\n"
-    )
-    assert find_ente_password(str(csv_file), "ente.io") == "entepass"
-
-
-def test_find_ente_password_no_match_raises(tmp_path):
-    csv_file = tmp_path / "firefox.csv"
-    csv_file.write_text("url,username,password\nhttps://github.com,me,ghpass\n")
-    with pytest.raises(VaultError, match="No Firefox-saved login"):
-        find_ente_password(str(csv_file), "ente.io")
-
-
-def test_find_ente_password_alt_column_names(tmp_path):
-    # firefox_decrypt's column names aren't fully pinned down yet — support
-    # both the Firefox-native export schema and firefox_decrypt's own.
-    csv_file = tmp_path / "firefox.csv"
-    csv_file.write_text(
-        "login_uri,login_user,login_password\n"
-        "https://auth.ente.io,me,entepass\n"
-    )
-    assert find_ente_password(str(csv_file), "ente.io") == "entepass"
 
 
 # ── export_firefox(): stderr must never leak into the CSV data ──────────────
@@ -71,8 +40,7 @@ def test_export_firefox_keeps_stderr_warnings_out_of_csv_data(tmp_path):
     # (e.g. "profile.ini not found"). export_firefox() must not merge that
     # into the CSV data — confirmed live, doing so makes the warning line
     # csv.DictReader's header instead of "url,user,password", silently
-    # breaking every row lookup (find_ente_password never matches anything
-    # despite the real row being present in the export).
+    # corrupting the export.
     stdout = b'"url","user","password"\r\n"https://auth.ente.com","me","secret"\r\n'
     stderr = b"2026-07-12 16:18:04,190 - WARNING - profile.ini not found\n"
     fake = _FakeFirefoxDecryptProc(stdout, stderr)
@@ -84,10 +52,9 @@ def test_export_firefox_keeps_stderr_warnings_out_of_csv_data(tmp_path):
     with patch("superguardian.vault.asyncio.create_subprocess_exec", fake_create):
         _run(export_firefox("/profile", "/decrypt.py", out_csv))
 
-    written = open(out_csv).read()
+    written = open(out_csv, newline="").read()
     assert "WARNING" not in written
-    assert written.startswith('"url","user","password"')
-    assert find_ente_password(out_csv, "ente.com") == "secret"
+    assert written == '"url","user","password"\r\n"https://auth.ente.com","me","secret"\r\n'
 
 
 def test_export_firefox_raises_with_stderr_on_failure(tmp_path):
@@ -110,7 +77,6 @@ def test_vault_config_from_dict_ok():
             "mountpoint": "/run/user/1000/sg-vault",
             "firefox_profile": "/home/u/.mozilla/firefox/x.default",
             "firefox_decrypt_path": "/home/u/tools/firefox_decrypt.py",
-            "ente_login_match": "ente.io",
         }
     }
     vcfg = VaultConfig.from_dict(cfg)
@@ -344,7 +310,6 @@ def _vcfg() -> VaultConfig:
         mountpoint="/run/user/1000/sg-vault",
         firefox_profile="/home/u/.mozilla/firefox/x.default",
         firefox_decrypt_path="/home/u/tools/firefox_decrypt.py",
-        ente_login_match="ente.io",
         ente_export_dir="/home/u/.config/ente-cli-export",
     )
 
@@ -353,7 +318,6 @@ def test_run_backup_dismounts_on_success():
     with (
         patch("superguardian.vault.mount", AsyncMock()) as m_mount,
         patch("superguardian.vault.export_firefox", AsyncMock()),
-        patch("superguardian.vault.find_ente_password", return_value="ente-pw"),
         patch("superguardian.vault.export_ente_otp", AsyncMock()),
         patch("superguardian.vault.git_commit", AsyncMock()),
         patch("superguardian.vault.dismount", AsyncMock(return_value=0)) as m_dismount,
@@ -378,7 +342,6 @@ def test_run_backup_dismounts_even_when_ente_export_fails():
     with (
         patch("superguardian.vault.mount", AsyncMock()),
         patch("superguardian.vault.export_firefox", AsyncMock()),
-        patch("superguardian.vault.find_ente_password", return_value="ente-pw"),
         patch("superguardian.vault.export_ente_otp", AsyncMock(side_effect=VaultError("boom"))),
         patch("superguardian.vault.git_commit", AsyncMock()) as m_commit,
         patch("superguardian.vault.dismount", AsyncMock(return_value=0)) as m_dismount,
@@ -398,7 +361,6 @@ def test_run_backup_warns_loudly_when_dismount_itself_fails():
     with (
         patch("superguardian.vault.mount", AsyncMock()),
         patch("superguardian.vault.export_firefox", AsyncMock()),
-        patch("superguardian.vault.find_ente_password", return_value="ente-pw"),
         patch("superguardian.vault.export_ente_otp", AsyncMock()),
         patch("superguardian.vault.git_commit", AsyncMock()),
         patch("superguardian.vault.dismount", AsyncMock(return_value=1)),

@@ -121,7 +121,6 @@ vault:
   size_mb: 100
   firefox_profile: /home/youruser/.mozilla/firefox/xxxxxxxx.default-release
   firefox_decrypt_path: /home/youruser/tools/firefox_decrypt/firefox_decrypt.py
-  ente_login_match: ente.io   # verify against your actual saved login — not guaranteed to be .io
 ```
 
 Press `R` inside the app to reload the config without restarting.
@@ -210,12 +209,12 @@ The VeraCrypt password is prompted every time and is never written to disk. It's
    ```
    Formatting the container needs root (loop-device/`mkfs` access), so it'll prompt for your `sudo` password partway through — that's expected. Do **not** run the whole command with `sudo` in front, though: that changes `$HOME` and makes it silently read/create the wrong user's config, putting the container in the wrong place.
 5. Add a `laptop_to_save_a_files` entry so the container file rides your normal sync.
-6. Make sure the Ente Auth account login (email/password) is saved in Firefox's own password manager, so the backup flow can pull the Ente password from the decrypted Firefox export instead of prompting separately. **Check the actual domain** it's saved under (open Firefox's `about:logins`, or grep a test `firefox_decrypt` export) — Ente's product domain isn't guaranteed to be `ente.io` for every account; set `vault.ente_login_match` to whatever substring is actually in the saved URL.
+
+That's it for Ente Auth — no password or account-matching setup needed. `ente export` (already authenticated from step 2) writes already-decrypted OTP data directly; the backup flow just copies it into the vault.
 
 ### Security notes
 
 - Firefox does **not** need to be closed — `firefox_decrypt` opens `key4.db` with a plain SQLite connection, which generally allows concurrent reads even while Firefox holds it open (confirmed live, repeatedly, with Firefox running). There's a narrow theoretical race if Firefox happens to be writing at that exact instant, but it's not a hard requirement.
-- `ente auth decrypt` only accepts its password via a `-p` flag (no stdin form exists), so it's briefly visible via `ps`/`/proc/<pid>/cmdline` to other local users during that step — a low-severity, accepted tradeoff on a single-user machine.
 - If any step fails partway through, the vault is still dismounted (`try`/`finally`) — it's never left mounted after a failed run. If dismount *itself* fails (confirmed live: veracrypt can report "target is busy" even with `--force`, e.g. a process with its cwd inside the mountpoint), that's surfaced as a loud red warning + persistent error toast rather than silently reported as a normal success — check the log and dismount manually if you ever see one (`sudo veracrypt -t --force -u <mountpoint>`).
 
 ---

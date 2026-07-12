@@ -12,8 +12,8 @@ reimplemented in Python, matching this project's rsync convention.
 from __future__ import annotations
 
 import asyncio
-import csv
 import os
+import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
@@ -33,8 +33,7 @@ async def _run(
     Runs a subprocess, optionally feeding stdin_data (e.g. a password) and
     closing stdin immediately after. Returns (returncode, combined output).
     Secrets passed via stdin_data never appear in argv, so they're not
-    visible via `ps`/shell history — unlike the -p flag export_ente_otp()
-    has to use (no stdin form exists for that one; documented tradeoff).
+    visible via `ps`/shell history.
     """
     proc = await asyncio.create_subprocess_exec(
         *cmd,
@@ -207,9 +206,8 @@ async def export_firefox(profile: str, decrypt_script: str, out_csv: str) -> Non
     and _run() merges stderr into stdout for its callers that want a
     combined log. Here stdout is meant to be pure, parseable CSV data —
     merging the warning in front of it would make it the CSV header
-    instead of "url,user,password", silently breaking every row lookup
-    downstream. Confirmed live: this is exactly what caused
-    find_ente_password() to report no match despite the row being present.
+    instead of "url,user,password", silently corrupting the export.
+    Confirmed live: this is exactly what broke it before this fix.
     """
     os.makedirs(os.path.dirname(out_csv) or ".", exist_ok=True)
     proc = await asyncio.create_subprocess_exec(
@@ -228,53 +226,33 @@ async def export_firefox(profile: str, decrypt_script: str, out_csv: str) -> Non
 
 # ── ente auth export ─────────────────────────────────────────────────────────
 
-def find_ente_password(firefox_csv: str, login_match: str) -> str:
+async def export_ente_otp(export_dir: str, out_txt: str) -> None:
     """
-    Parses a firefox_decrypt CSV export and returns the password for the row
-    whose URL contains *login_match* (e.g. "ente.io"). Raises VaultError with
-    a clear message if no matching row is found, rather than silently
-    proceeding with an empty/wrong password.
-    """
-    with open(firefox_csv, newline="") as fh:
-        reader = csv.DictReader(fh)
-        for row in reader:
-            # firefox_decrypt's CSV columns are "url","user","password" — the
-            # extra .get() fallbacks are just cheap insurance against a future
-            # firefox_decrypt version renaming them.
-            url = row.get("url") or row.get("login_uri") or ""
-            if login_match in url:
-                password = row.get("password") or row.get("login_password")
-                if password:
-                    return password
-    raise VaultError(
-        f"No Firefox-saved login matching {login_match!r} found in {firefox_csv} — "
-        "save your Ente Auth account login in Firefox first, or check "
-        "vault.ente_login_match in config.yaml."
-    )
-
-
-async def export_ente_otp(password: str, export_dir: str, out_txt: str) -> None:
-    """
-    Pulls the latest encrypted Ente Auth export (via `ente export`, which
-    writes into the directory configured by `ente account update --app auth
-    --dir ...`) and decrypts it to *out_txt* — plaintext otpauth:// URIs, one
-    per line — expected to live inside the mounted vault.
+    Runs `ente export` and copies the result to *out_txt* — plaintext
+    otpauth:// URIs, one per line — expected to live inside the mounted
+    vault.
 
     Requires `ente account add` to have been run once, manually, outside
     this app, so the CLI session is already authenticated.
 
-    Note: `ente auth decrypt` only accepts the password via -p (no stdin/
-    env-var form), so it's briefly visible in `ps`/`/proc/<pid>/cmdline` to
-    other local users for the duration of the subprocess call — an accepted
-    tradeoff on a single-user machine.
+    No password needed, and no separate decrypt step: confirmed live that
+    for an already-authenticated `auth`-type account, `ente export` writes
+    already-decrypted plaintext directly to <export_dir>/ente_auth.txt — the
+    CLI's locally-stored session already has what it needs. (There IS an
+    `ente auth decrypt` subcommand, which earlier research suggested was
+    necessary — that appears to describe the mobile/web app's manual
+    "Export" feature, which produces an encrypted file for migrating to
+    another device, not the CLI's own `export` behavior once authenticated.
+    Confirmed this the hard way: feeding ente_auth.txt's plaintext content
+    into `ente auth decrypt` fails immediately with a JSON parse error,
+    since it's not the encrypted format that subcommand expects.)
     """
     os.makedirs(os.path.dirname(out_txt) or ".", exist_ok=True)
     await _run("ente", "export")
-    exports = sorted(Path(export_dir).glob("*.txt"), key=os.path.getmtime)
-    if not exports:
-        raise VaultError(f"No Ente export found in {export_dir} after `ente export`.")
-    latest = str(exports[-1])
-    await _run("ente", "auth", "decrypt", latest, out_txt, "-p", password)
+    latest = Path(export_dir) / "ente_auth.txt"
+    if not latest.exists():
+        raise VaultError(f"Expected {latest} after `ente export` but it wasn't created.")
+    shutil.copy(latest, out_txt)
 
 
 # ── git commit ───────────────────────────────────────────────────────────────
@@ -297,7 +275,6 @@ class VaultConfig:
     mountpoint: str
     firefox_profile: str
     firefox_decrypt_path: str
-    ente_login_match: str
     ente_export_dir: str
 
     @classmethod
@@ -305,7 +282,7 @@ class VaultConfig:
         v = cfg.get("vault") or {}
         missing = [
             k for k in
-            ("container", "mountpoint", "firefox_profile", "firefox_decrypt_path", "ente_login_match")
+            ("container", "mountpoint", "firefox_profile", "firefox_decrypt_path")
             if not v.get(k)
         ]
         if missing:
@@ -318,7 +295,6 @@ class VaultConfig:
             mountpoint=v["mountpoint"],
             firefox_profile=v["firefox_profile"],
             firefox_decrypt_path=v["firefox_decrypt_path"],
-            ente_login_match=v["ente_login_match"],
             ente_export_dir=v.get("ente_export_dir") or str(Path.home() / ".config" / "ente-cli-export"),
         )
 
@@ -346,14 +322,9 @@ async def run_backup(
         log("Exporting Firefox passwords…")
         await export_firefox(cfg.firefox_profile, cfg.firefox_decrypt_path, firefox_csv)
 
-        log("Locating Ente Auth password in Firefox export…")
-        ente_password = find_ente_password(firefox_csv, cfg.ente_login_match)
-        try:
-            otp_txt = str(Path(cfg.mountpoint) / "otp" / "ente.txt")
-            log("Exporting Ente Auth OTP…")
-            await export_ente_otp(ente_password, cfg.ente_export_dir, otp_txt)
-        finally:
-            ente_password = ""  # best-effort clear; Python strings are immutable
+        otp_txt = str(Path(cfg.mountpoint) / "otp" / "ente.txt")
+        log("Exporting Ente Auth OTP…")
+        await export_ente_otp(cfg.ente_export_dir, otp_txt)
 
         log("Committing to vault git repo…")
         await git_commit(cfg.mountpoint)

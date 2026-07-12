@@ -56,7 +56,6 @@ vault:
   size_mb: 100
   firefox_profile: /home/{user}/snap/firefox/common/.mozilla/firefox/CHANGE_ME.default
   firefox_decrypt_path: /home/{user}/tools/firefox_decrypt/firefox_decrypt.py
-  ente_login_match: ente.io
 """
 
 
