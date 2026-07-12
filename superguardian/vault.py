@@ -66,9 +66,21 @@ async def mount(container: str, mountpoint: str, password: str) -> None:
 
 
 async def dismount(mountpoint: str) -> None:
+    # --force: without it, a volume VeraCrypt considers "in use" (e.g. a
+    # desktop file indexer briefly touching the freshly-mounted directory)
+    # makes it drop into an interactive "Continue? (y/n)" confirmation
+    # prompt — fatal here, since this runs with no TTY attached and would
+    # hang forever, defeating the guaranteed-dismount design entirely.
+    # Safe in our flow: by the time dismount() runs, run_backup() has
+    # already finished all its own writes and closed every file handle it
+    # opened, so forcing past an external/spurious "in use" is the correct
+    # call, not a data-loss risk.
     # check=False: dismount is called from a `finally`, and we don't want a
     # failure here (e.g. "not mounted") to mask the real error being handled.
-    await _run("veracrypt", "-t", "-u", mountpoint, check=False)
+    await _run(
+        "veracrypt", "-t", "--non-interactive", "--force", "-u", mountpoint,
+        check=False,
+    )
 
 
 async def create_container(container: str, size_mb: int, password: str) -> None:

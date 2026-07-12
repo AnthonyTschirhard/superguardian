@@ -11,6 +11,7 @@ from superguardian.vault import (
     VaultConfig,
     VaultError,
     create_container,
+    dismount,
     find_ente_password,
     mount,
     run_backup,
@@ -150,6 +151,26 @@ def test_create_container_refuses_to_overwrite_existing(tmp_path):
     container.write_bytes(b"already here")
     with pytest.raises(VaultError, match="already exists"):
         _run(create_container(str(container), 100, "vault-pw"))
+
+
+def test_dismount_forces_and_never_prompts_interactively():
+    # Regression test: without --non-interactive --force, a volume VeraCrypt
+    # considers "in use" drops into an interactive "Continue? (y/n)" prompt,
+    # which hangs forever with no TTY attached — confirmed live against a
+    # real mount. dismount() is always called from a `finally`, so it must
+    # never be able to block indefinitely.
+    fake = _FakeProc()
+    captured_args: list[str] = []
+
+    async def fake_create(*args, **kwargs):
+        captured_args.extend(args)
+        return fake
+
+    with patch("superguardian.vault.asyncio.create_subprocess_exec", fake_create):
+        _run(dismount("/run/user/1000/superguardian-vault"))
+
+    assert "--non-interactive" in captured_args
+    assert "--force" in captured_args or "-f" in captured_args
 
 
 # ── run_backup(): dismount must always happen ────────────────────────────────
