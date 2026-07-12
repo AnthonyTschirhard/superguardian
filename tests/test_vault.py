@@ -188,20 +188,27 @@ def test_mount_plain_sudo_when_no_sudo_password_given(tmp_path):
     assert "-S" not in captured_args
 
 
-def test_mount_chains_sudo_password_then_vault_password_via_stdin(tmp_path):
-    # Regression test: on Linux, veracrypt always needs root for mount (it
-    # writes into system mount infra) and refuses to self-escalate under
-    # --non-interactive — confirmed live ("Failed to obtain administrator
-    # privileges"). The TUI has no controlling terminal for `sudo` to prompt
-    # on, so it must drive `sudo -S`, which consumes exactly the first
-    # stdin line for its own password before veracrypt's own --stdin reads
-    # the rest for the vault password. Both must go via stdin, never argv.
-    fake = _FakeProc()
-    captured_args: list[str] = []
+def test_mount_authenticates_sudo_separately_then_plain_sudo_for_veracrypt(tmp_path):
+    # Regression test: chaining "sudo_password\nvault_password" through one
+    # shared stdin pipe for a single `sudo -S veracrypt --stdin ...` call is
+    # unreliable — confirmed live that if sudo already has a cached
+    # credential (e.g. from recent unrelated sudo activity in the same
+    # session), `sudo -S` silently skips reading stdin *at all*, so the
+    # unconsumed stream — starting with what was meant to be the sudo
+    # password — gets handed to veracrypt's own --stdin instead. veracrypt
+    # then tries to unlock the volume with the SUDO password and fails with
+    # a generic "Incorrect password" error that gives no hint what
+    # happened. Authentication must happen as its own isolated `sudo -S -v`
+    # call first, guaranteeing the veracrypt call after it never needs to
+    # touch stdin for its own sudo password.
+    procs: list[_FakeProc] = []
+    calls: list[list[str]] = []
 
     async def fake_create(*args, **kwargs):
-        captured_args.extend(args)
-        return fake
+        proc = _FakeProc()
+        procs.append(proc)
+        calls.append(list(args))
+        return proc
 
     mountpoint = str(tmp_path / "mnt")
     with patch("superguardian.vault.asyncio.create_subprocess_exec", fake_create):
@@ -209,13 +216,18 @@ def test_mount_chains_sudo_password_then_vault_password_via_stdin(tmp_path):
             "/home/u/vault.hc", mountpoint, "vault-pw", sudo_password="sudo-pw",
         ))
 
-    assert captured_args[:3] == ["sudo", "-S", "veracrypt"]
-    assert "vault-pw" not in captured_args
-    assert "sudo-pw" not in captured_args
-    written = fake.stdin.written.decode()
-    lines = written.splitlines()
-    assert lines[0] == "sudo-pw"  # sudo -S reads this line first
-    assert lines[1] == "vault-pw"  # then veracrypt --stdin reads this one
+    assert len(calls) == 2
+    # Step 1: isolated sudo authentication gets the sudo password.
+    assert calls[0] == ["sudo", "-S", "-v"]
+    assert procs[0].stdin.written.decode().strip() == "sudo-pw"
+    # Step 2: plain `sudo` (already cached from step 1) + veracrypt --stdin
+    # gets ONLY the vault password.
+    assert calls[1][:2] == ["sudo", "veracrypt"]
+    assert "-S" not in calls[1]
+    assert procs[1].stdin.written.decode().strip() == "vault-pw"
+    all_args = [a for call in calls for a in call]
+    assert "vault-pw" not in all_args
+    assert "sudo-pw" not in all_args
 
 
 def test_create_container_runs_veracrypt_via_sudo_not_whole_process(tmp_path):
@@ -270,20 +282,25 @@ def test_dismount_forces_and_never_prompts_interactively():
     assert "--force" in captured_args or "-f" in captured_args
 
 
-def test_dismount_chains_sudo_password_via_stdin():
-    fake = _FakeProc()
-    captured_args: list[str] = []
+def test_dismount_authenticates_sudo_separately_then_plain_sudo_for_veracrypt():
+    procs: list[_FakeProc] = []
+    calls: list[list[str]] = []
 
     async def fake_create(*args, **kwargs):
-        captured_args.extend(args)
-        return fake
+        proc = _FakeProc()
+        procs.append(proc)
+        calls.append(list(args))
+        return proc
 
     with patch("superguardian.vault.asyncio.create_subprocess_exec", fake_create):
         _run(dismount("/run/user/1000/superguardian-vault", sudo_password="sudo-pw"))
 
-    assert captured_args[:3] == ["sudo", "-S", "veracrypt"]
-    assert "sudo-pw" not in captured_args
-    assert fake.stdin.written.decode().strip() == "sudo-pw"
+    assert len(calls) == 2
+    assert calls[0] == ["sudo", "-S", "-v"]
+    assert procs[0].stdin.written.decode().strip() == "sudo-pw"
+    assert calls[1][:2] == ["sudo", "veracrypt"]
+    assert "-S" not in calls[1]
+    assert "sudo-pw" not in [a for call in calls for a in call]
 
 
 # ── run_backup(): dismount must always happen ────────────────────────────────

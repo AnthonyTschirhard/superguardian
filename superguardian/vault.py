@@ -56,6 +56,28 @@ async def _run(
 
 # ── mount / dismount / create (create + git_init are one-time setup) ───────────
 
+async def _sudo_authenticate(sudo_password: str) -> None:
+    """
+    Validates/caches sudo credentials via a dedicated, isolated call, so the
+    veracrypt invocation that follows never needs to read a password from
+    stdin itself for its own sudo escalation.
+
+    Deliberately NOT done by chaining "sudo_password\\nvault_password" into
+    one shared stdin pipe for `sudo -S veracrypt --stdin ...` — confirmed
+    live that this is unreliable: if a sudo credential happens to already
+    be cached (e.g. from recent unrelated sudo activity in the same
+    session), `sudo -S` silently skips reading stdin *at all*, so the whole
+    unconsumed stream — starting with what was meant to be the sudo
+    password — gets handed to veracrypt's own --stdin instead. veracrypt
+    then tries to unlock the volume with the *sudo* password and fails with
+    a generic "Incorrect password" error that gives no hint what happened.
+    Authenticating in its own step first sidesteps the ambiguity entirely:
+    afterwards `sudo <cmd>` is guaranteed already-cached and won't touch
+    stdin for its own purposes, so a following --stdin flag is unambiguous.
+    """
+    await _run("sudo", "-S", "-v", stdin_data=sudo_password)
+
+
 async def mount(
     container: str, mountpoint: str, password: str, *, sudo_password: str | None = None,
 ) -> None:
@@ -68,22 +90,18 @@ async def mount(
 
     sudo_password=None (the `vault init` CLI, run interactively in a real
     terminal): plain `sudo`, which prompts on the terminal normally.
-    sudo_password set (the TUI, no controlling terminal to prompt on):
-    `sudo -S`, fed via the same stdin pipe as the vault password — sudo -S
-    consumes the first line for its own password, then the exec'd veracrypt
-    process reads the remaining line(s) via --stdin for the vault password.
+    sudo_password set (the TUI, no controlling terminal to prompt on): see
+    _sudo_authenticate()'s docstring for why authentication happens as its
+    own isolated step first, rather than chaining both secrets into one
+    shared stdin stream.
     """
     os.makedirs(mountpoint, exist_ok=True)
     if sudo_password is not None:
-        prefix = ["sudo", "-S"]
-        stdin_data = f"{sudo_password}\n{password}"
-    else:
-        prefix = ["sudo"]
-        stdin_data = password
+        await _sudo_authenticate(sudo_password)
     await _run(
-        *prefix, "veracrypt", "-t", "--non-interactive", "--stdin", "--pim=0",
+        "sudo", "veracrypt", "-t", "--non-interactive", "--stdin", "--pim=0",
         "--protect-hidden=no", container, mountpoint,
-        stdin_data=stdin_data,
+        stdin_data=password,
     )
 
 
@@ -112,14 +130,9 @@ async def dismount(mountpoint: str, *, sudo_password: str | None = None) -> int:
     # failure here (e.g. "not mounted") to raise and mask the real error
     # being handled — the caller inspects the returned code instead.
     if sudo_password is not None:
-        prefix = ["sudo", "-S"]
-        stdin_data: str | None = sudo_password
-    else:
-        prefix = ["sudo"]
-        stdin_data = None
+        await _sudo_authenticate(sudo_password)
     code, _output = await _run(
-        *prefix, "veracrypt", "-t", "--non-interactive", "--force", "-u", mountpoint,
-        stdin_data=stdin_data,
+        "sudo", "veracrypt", "-t", "--non-interactive", "--force", "-u", mountpoint,
         check=False,
     )
     return code

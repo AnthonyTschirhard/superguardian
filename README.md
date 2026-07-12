@@ -180,7 +180,7 @@ Pressing `v` from the Primary Save tab mounts a VeraCrypt-encrypted container, e
 
 The VeraCrypt password is prompted every time and is never written to disk. It's fed to `veracrypt` via stdin, never as a command-line argument, so it's never visible to other processes on the machine.
 
-**You'll be prompted twice: your VeraCrypt vault password, then your `sudo` password.** On Linux, `veracrypt` always needs root to mount/dismount (it writes into system mount infrastructure) and can only self-escalate via its own internal `sudo` call when there's a real terminal to prompt on — the TUI has no controlling terminal, so it collects your sudo password itself and feeds it to `sudo -S`, which is chained through the same stdin pipe ahead of the vault password. Neither password is ever written to disk or passed as a command-line argument.
+**You'll be prompted twice: your VeraCrypt vault password, then your `sudo` password.** On Linux, `veracrypt` always needs root to mount/dismount (it writes into system mount infrastructure) and can only self-escalate via its own internal `sudo` call when there's a real terminal to prompt on — the TUI has no controlling terminal, so it authenticates `sudo` itself first via an isolated `sudo -S -v` call, then runs the actual `veracrypt` command with plain `sudo` (already cached, so it never touches stdin for its own password) and feeds the vault password to veracrypt's own `--stdin`. Neither password is ever written to disk or passed as a command-line argument, and they're never at risk of being confused with each other regardless of whether `sudo` happened to already be cached from other activity on the machine.
 
 ### One-time setup
 
