@@ -44,9 +44,18 @@ async def _run(
     )
     if stdin_data is not None:
         assert proc.stdin is not None
-        proc.stdin.write((stdin_data + "\n").encode())
-        await proc.stdin.drain()
-        proc.stdin.close()
+        try:
+            proc.stdin.write((stdin_data + "\n").encode())
+            await proc.stdin.drain()
+            proc.stdin.close()
+        except (BrokenPipeError, ConnectionResetError):
+            # The process can exit/close its end of the pipe before we
+            # finish writing — confirmed live with `sudo -S -v` when a
+            # credential is already cached: it doesn't need to read a
+            # password at all and exits immediately. Not inherently an
+            # error; the process's own exit code (checked below) is the
+            # real signal of success or failure.
+            pass
     stdout, _ = await proc.communicate()
     output = stdout.decode(errors="replace")
     if check and proc.returncode != 0:

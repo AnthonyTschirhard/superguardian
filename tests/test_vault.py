@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from superguardian.vault import _run as _vault_run
 from superguardian.vault import (
     VaultConfig,
     VaultError,
@@ -151,6 +152,38 @@ class _FakeProc:
 
     async def communicate(self):
         return b"", b""
+
+
+class _BrokenPipeStdin:
+    """Simulates a process that exits/closes its stdin before we finish
+    writing — e.g. `sudo -S -v` with an already-cached credential."""
+
+    def write(self, data: bytes) -> None:
+        raise BrokenPipeError()
+
+    async def drain(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+
+def test_run_survives_broken_pipe_when_process_exits_before_reading_stdin():
+    # Regression test: confirmed live as an actual crash. A process fed
+    # stdin_data can exit (and close its end of the pipe) before our
+    # write()/drain() call completes — not inherently an error, just means
+    # the process didn't need our input. _run() must not propagate the
+    # resulting BrokenPipeError/ConnectionResetError; the process's actual
+    # exit code is still the real signal of success or failure.
+    fake = _FakeProc(returncode=0)
+    fake.stdin = _BrokenPipeStdin()
+
+    async def fake_create(*args, **kwargs):
+        return fake
+
+    with patch("superguardian.vault.asyncio.create_subprocess_exec", fake_create):
+        code, _output = _run(_vault_run("sudo", "-S", "-v", stdin_data="pw"))
+    assert code == 0
 
 
 def test_mount_passes_password_via_stdin_not_argv(tmp_path):

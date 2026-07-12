@@ -963,6 +963,16 @@ class SuperGuardianApp(App):
         except vault.VaultError as exc:
             log.write(f"[red]Vault backup failed: {exc}[/red]")
             self.notify("Vault backup failed — see log.", severity="error")
+        except Exception as exc:
+            # Broad catch deliberately, not just VaultError: any exception
+            # that escapes this boundary propagates to Textual's default
+            # crash handler, which dumps every frame's locals — confirmed
+            # live to include the plaintext vault/sudo passwords still held
+            # in mount()/run_backup()'s frames at that point (a
+            # ConnectionResetError from a broken pipe was enough to trigger
+            # it). Nothing gets past here uncaught, regardless of type.
+            log.write(f"[red]Vault backup failed unexpectedly: {exc}[/red]")
+            self.notify("Vault backup failed — see log.", severity="error")
         finally:
             password = ""  # best-effort clear; original Input value may still be referenced
             sudo_password = ""
