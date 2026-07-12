@@ -121,7 +121,7 @@ vault:
   size_mb: 100
   firefox_profile: /home/youruser/.mozilla/firefox/xxxxxxxx.default-release
   firefox_decrypt_path: /home/youruser/tools/firefox_decrypt/firefox_decrypt.py
-  ente_login_match: ente.io
+  ente_login_match: ente.io   # verify against your actual saved login — not guaranteed to be .io
 ```
 
 Press `R` inside the app to reload the config without restarting.
@@ -195,14 +195,19 @@ The VeraCrypt password is prompted every time and is never written to disk. It's
    # firefox_decrypt — https://github.com/unode/firefox_decrypt (run from a git checkout, not pip)
    git clone https://github.com/unode/firefox_decrypt ~/tools/firefox_decrypt
    ```
-2. Log in to the `ente` CLI once, interactively: `ente account add`, then point it at an export directory for the `auth` app: `ente account update --app auth --email you@example.com --dir ~/.config/ente-cli-export`.
+2. Log in to the `ente` CLI once, interactively:
+   ```bash
+   mkdir -p ~/.config/ente-cli-export   # must exist first, or `account add` loops asking for it
+   ente account add
+   ```
+   It prompts for app type (enter `auth`), export directory (the path above), your Ente email, and password — see `ente account list` afterward to confirm it took.
 3. Fill in the `vault:` block in `config.yaml` (see the example above).
 4. Create the container and initialize the git repo inside it — run once:
    ```bash
    .venv/bin/python -m superguardian.vault init
    ```
 5. Add a `laptop_to_save_a_files` entry so the container file rides your normal sync.
-6. Make sure the Ente Auth account login (email/password) is saved in Firefox's own password manager — the backup flow automatically pulls the Ente password from the freshly-decrypted Firefox export instead of prompting for it separately, so this step is what makes that possible.
+6. Make sure the Ente Auth account login (email/password) is saved in Firefox's own password manager, so the backup flow can pull the Ente password from the decrypted Firefox export instead of prompting separately. **Check the actual domain** it's saved under (open Firefox's `about:logins`, or grep a test `firefox_decrypt` export) — Ente's product domain isn't guaranteed to be `ente.io` for every account; set `vault.ente_login_match` to whatever substring is actually in the saved URL.
 
 ### Security notes
 

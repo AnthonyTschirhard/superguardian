@@ -110,7 +110,9 @@ async def export_firefox(profile: str, decrypt_script: str, out_csv: str) -> Non
     directly and NSS locks those files while Firefox holds the profile open.
     """
     os.makedirs(os.path.dirname(out_csv) or ".", exist_ok=True)
-    _, output = await _run("python3", decrypt_script, "--format=csv", profile)
+    _, output = await _run(
+        "python3", decrypt_script, "--format=csv", "--csv-delimiter=,", profile,
+    )
     Path(out_csv).write_text(output)
 
 
@@ -126,6 +128,9 @@ def find_ente_password(firefox_csv: str, login_match: str) -> str:
     with open(firefox_csv, newline="") as fh:
         reader = csv.DictReader(fh)
         for row in reader:
+            # firefox_decrypt's CSV columns are "url","user","password" — the
+            # extra .get() fallbacks are just cheap insurance against a future
+            # firefox_decrypt version renaming them.
             url = row.get("url") or row.get("login_uri") or ""
             if login_match in url:
                 password = row.get("password") or row.get("login_password")
