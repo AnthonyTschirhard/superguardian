@@ -10,6 +10,10 @@ CONFIG_FILE = CONFIG_DIR / "config.yaml"
 DB_FILE = CONFIG_DIR / "history.db"
 
 
+class ConfigError(Exception):
+    """Raised when the config file cannot be parsed."""
+
+
 def _make_template() -> str:
     user = getpass.getuser()
     uid = os.getuid()
@@ -24,14 +28,18 @@ discs:
   SAVE_C: /run/media/{user}/SAVE_C
 
 # Primary Save — folders to sync from laptop to SAVE_A
-# Each entry maps a source folder to its destination.
-# Optional 'exclude' accepts rsync patterns (same as --exclude=PATTERN).
-laptop_to_save_a: []
-  # - from: /home/{user}/SAVE/PHOTOS
-  #   to:   /run/media/{user}/SAVE_A/PHOTOS
-  #   exclude:
-  #     - .venv
-  #     - __pycache__
+# Each entry needs 'from' (source) and 'to' (destination).
+# 'exclude' is optional and accepts rsync patterns.
+#
+# laptop_to_save_a:
+#   - from: /home/{user}/Documents
+#     to:   /run/media/{user}/SAVE_A/Documents
+#   - from: /home/{user}/Photos
+#     to:   /run/media/{user}/SAVE_A/Photos
+#     exclude:
+#       - .venv
+#       - __pycache__
+laptop_to_save_a:
 
 # Primary Save — individual files to sync from laptop to SAVE_A
 # (as opposed to whole folders above). Each entry maps one source file
@@ -56,6 +64,17 @@ vault:
   size_mb: 100
   firefox_profile: /home/{user}/snap/firefox/common/.mozilla/firefox/CHANGE_ME.default
   firefox_decrypt_path: /home/{user}/tools/firefox_decrypt/firefox_decrypt.py
+
+# Git Repos — list of git repositories (normal or bare) to back up by pushing
+# to their configured remotes. Press 's' on the Git tab to push all branches.
+# Use the dict form with 'worktree' for bare repos that manage a live directory
+# (e.g. the dotfiles-bare-repo pattern where work-tree is $HOME).
+#
+# git_repos:
+#   - /home/{user}/source/myproject
+#   - path: /home/{user}/.dotfiles
+#     worktree: /home/{user}
+git_repos:
 """
 
 
@@ -63,8 +82,14 @@ def load() -> dict[str, Any]:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     if not CONFIG_FILE.exists():
         CONFIG_FILE.write_text(_make_template())
-    with CONFIG_FILE.open() as fh:
-        return yaml.safe_load(fh) or {}
+    try:
+        with CONFIG_FILE.open() as fh:
+            return yaml.safe_load(fh) or {}
+    except yaml.YAMLError as exc:
+        raise ConfigError(
+            f"Cannot parse {CONFIG_FILE} — invalid YAML.\n\n{exc}\n\n"
+            "Fix the file and press R to reload."
+        ) from exc
 
 
 def disc_path(cfg: dict, name: str) -> str:
